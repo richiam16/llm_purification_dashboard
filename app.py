@@ -4,6 +4,7 @@ import re
 import glob
 
 import pandas as pd
+import plotly.graph_objects as go
 import dash
 from dash import dcc, html, dash_table, Input, Output, State
 import dash_bootstrap_components as dbc
@@ -105,11 +106,52 @@ METRIC_TYPES = ["silhouette", "davies_bouldin", "n_clusters"]
 # ---------------------------------------------------------------------------
 # Dash app
 # ---------------------------------------------------------------------------
+CUSTOM_CSS = """
+/* ── Global ── */
+body { background-color: #f4f6f9; }
+
+/* ── Navbar ── */
+.navbar-brand { font-size: 1.2rem; font-weight: 700; letter-spacing: 0.02em; }
+.navbar-subtitle { font-size: 0.75rem; opacity: 0.75; display: block; line-height: 1.2; }
+
+/* ── Tabs ── */
+.nav-tabs .nav-link          { color: #495057; font-weight: 500; border-radius: 6px 6px 0 0; }
+.nav-tabs .nav-link.active   { color: #1a73e8; font-weight: 700; border-bottom: 3px solid #1a73e8; }
+.nav-tabs .nav-link:hover    { color: #1a73e8; }
+
+/* ── Filter panel ── */
+.filter-panel {
+    background: #ffffff;
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+    padding: 16px 20px 12px;
+    margin-bottom: 16px;
+    box-shadow: 0 1px 4px rgba(0,0,0,.06);
+}
+
+/* ── Contact avatar ── */
+.avatar-circle {
+    width: 56px; height: 56px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 1.2rem; font-weight: 700; color: #fff;
+    margin-bottom: 10px;
+}
+.person-card { transition: transform .15s, box-shadow .15s; }
+.person-card:hover { transform: translateY(-3px); box-shadow: 0 6px 18px rgba(0,0,0,.12) !important; }
+
+/* ── Accordion ── */
+.accordion-button { font-weight: 600; }
+.accordion-item   { border-left: 4px solid #1a73e8 !important; margin-bottom: 6px; border-radius: 6px !important; }
+"""
+
 app = dash.Dash(
     __name__,
-    external_stylesheets=[dbc.themes.FLATLY],
+    external_stylesheets=[dbc.themes.LUX],
     suppress_callback_exceptions=True,
-    title="LLM Extractor Dashboard",
+    title="ProtoPure",
+)
+app.index_string = app.index_string.replace(
+    "</head>", f"<style>{CUSTOM_CSS}</style></head>"
 )
 server = app.server
 
@@ -154,9 +196,18 @@ def detail_field(label, value):
 # ---------------------------------------------------------------------------
 # Tab layouts
 # ---------------------------------------------------------------------------
-def proteins_tab():
-    col_defs = [{"name": c.replace("_", " ").title(), "id": c} for c in TABLE_FIELDS]
+DEFAULT_COLS = ["pmid", "enzyme_name", "organism_source"]
 
+FIELD_LABELS = {c: c.replace("_", " ").title() for c in TABLE_FIELDS}
+FIELD_LABELS.update({
+    "pmid": "PMID", "enzyme_name": "Enzyme Name", "organism_source": "Organism",
+    "expression_strain": "Expression Strain", "uniprot_ids": "UniProt IDs",
+    "n_uniprot_entries": "# UniProt", "n_proteins_collected": "# Proteins",
+    "pub_date": "Publication Date", "source": "Journal",
+})
+
+
+def proteins_tab():
     search_fields = [
         {"label": "PMID",              "value": "pmid"},
         {"label": "Enzyme name",       "value": "enzyme_name"},
@@ -169,36 +220,53 @@ def proteins_tab():
         {"label": "Paper title",       "value": "title"},
     ]
 
+    col_options = [{"label": FIELD_LABELS.get(c, c), "value": c} for c in TABLE_FIELDS]
+
     return dbc.Container([
-        dbc.Row([
-            dbc.Col([
-                html.Label("Filter by group", className="fw-semibold small mb-1"),
-                dcc.Dropdown(
-                    id="filter-group",
-                    options=[{"label": g, "value": g} for g in ALL_GROUPS],
-                    multi=True,
-                    placeholder="All groups",
-                    style={"fontSize": "13px"},
-                ),
-            ], width=4),
-            dbc.Col([
-                html.Label("Search by", className="fw-semibold small mb-1"),
-                dcc.Dropdown(
-                    id="search-field",
-                    options=search_fields,
-                    value="enzyme_name",
-                    clearable=False,
-                    style={"fontSize": "13px"},
-                ),
-            ], width=2),
-            dbc.Col([
-                html.Label("Search value", className="fw-semibold small mb-1"),
-                dbc.InputGroup([
-                    dbc.Input(id="search-value", placeholder="Type to filter…", debounce=True, size="sm"),
-                    dbc.Button("✕ Clear", id="clear-search", size="sm", color="secondary", outline=True),
-                ]),
-            ], width=6),
-        ], className="mb-3"),
+        html.Div([
+            dbc.Row([
+                dbc.Col([
+                    html.Label("Filter by group", className="fw-semibold small mb-1"),
+                    dcc.Dropdown(
+                        id="filter-group",
+                        options=[{"label": g, "value": g} for g in ALL_GROUPS],
+                        multi=True,
+                        placeholder="All groups",
+                        style={"fontSize": "13px"},
+                    ),
+                ], width=4),
+                dbc.Col([
+                    html.Label("Search by", className="fw-semibold small mb-1"),
+                    dcc.Dropdown(
+                        id="search-field",
+                        options=search_fields,
+                        value="enzyme_name",
+                        clearable=False,
+                        style={"fontSize": "13px"},
+                    ),
+                ], width=2),
+                dbc.Col([
+                    html.Label("Search value", className="fw-semibold small mb-1"),
+                    dbc.InputGroup([
+                        dbc.Input(id="search-value", placeholder="Type to filter…", debounce=True, size="sm"),
+                        dbc.Button("✕ Clear", id="clear-search", size="sm", color="secondary", outline=True),
+                    ]),
+                ], width=6),
+            ], className="mb-2"),
+            dbc.Row([
+                dbc.Col([
+                    html.Label("Show columns", className="fw-semibold small mb-1"),
+                    dcc.Dropdown(
+                        id="col-selector",
+                        options=col_options,
+                        value=DEFAULT_COLS,
+                        multi=True,
+                        placeholder="Select columns…",
+                        style={"fontSize": "13px"},
+                    ),
+                ], width=12),
+            ]),
+        ], className="filter-panel"),
         dbc.Row([
             dbc.Col(html.Div(id="protein-count", className="text-muted small"), width=10),
             dbc.Col(
@@ -210,8 +278,8 @@ def proteins_tab():
         # Table
         dash_table.DataTable(
             id="protein-table",
-            columns=col_defs,
-            data=df[TABLE_FIELDS].to_dict("records"),
+            columns=[{"name": FIELD_LABELS.get(c, c), "id": c} for c in DEFAULT_COLS],
+            data=df[DEFAULT_COLS].to_dict("records"),
             page_size=25,
             page_action="native",
             sort_action="native",
@@ -229,12 +297,16 @@ def proteins_tab():
                 "whiteSpace": "nowrap",
             },
             style_header={
-                "fontWeight": "bold",
-                "backgroundColor": "#f0f4f8",
-                "borderBottom": "2px solid #dee2e6",
+                "fontWeight": "700",
+                "backgroundColor": "#1a3a5c",
+                "color": "#ffffff",
+                "borderBottom": "2px solid #1a3a5c",
+                "fontSize": "11px",
+                "textTransform": "uppercase",
+                "letterSpacing": "0.04em",
             },
             style_data_conditional=[
-                {"if": {"row_index": "odd"}, "backgroundColor": "#f8f9fa"},
+                {"if": {"row_index": "odd"}, "backgroundColor": "#eef4fd"},
                 {"if": {"state": "selected"}, "backgroundColor": "#cfe2ff", "border": "1px solid #9ec5fe"},
             ],
             tooltip_data=[
@@ -269,19 +341,31 @@ def clustering_tab():
                     inline=True,
                     className="mb-2",
                 ),
-            ]),
-        ]),
+            ], width=8),
+            dbc.Col([
+                html.Label("Show top N clusters", className="fw-semibold small mb-1"),
+                dcc.Dropdown(
+                    id="top-n-clusters",
+                    options=[{"label": str(n), "value": n} for n in [10, 15, 20, 30, 50]] +
+                            [{"label": "All", "value": 0}],
+                    value=20,
+                    clearable=False,
+                    style={"fontSize": "13px"},
+                ),
+            ], width=2),
+        ], className="mb-2 align-items-end"),
         dbc.Row([dbc.Col(html.Div(id="plot-status", className="text-danger small mb-1"))]),
         dbc.Row([
             dbc.Col(
-                html.Iframe(
-                    id="cluster-iframe",
-                    src="",
-                    style={"width": "100%", "height": "820px", "border": "1px solid #dee2e6", "borderRadius": "4px"},
+                dcc.Graph(
+                    id="cluster-graph",
+                    config={"displayModeBar": True, "toImageButtonOptions": {"format": "svg"}},
+                    style={"height": "650px"},
                 ),
                 width=12,
             ),
         ]),
+        html.Div(id="cluster-point-detail", className="mt-2"),
         html.Hr(),
         html.H6("Cluster metrics for selected parameters", className="mt-2 mb-2 fw-semibold"),
         dbc.Row([dbc.Col(html.Div(id="metrics-table-container"), width=12)]),
@@ -308,15 +392,21 @@ def grid_metrics_tab():
     ], fluid=True, className="pt-3")
 
 
-def person_card(name, email, role, departments):
+AVATAR_COLORS = ["#1a73e8", "#e8711a", "#1aa85c", "#8e1ae8"]
+
+def person_card(name, email, role, departments, color="#1a73e8"):
+    initials = "".join(p[0].upper() for p in name.split()[:2])
     return dbc.Card([
         dbc.CardBody([
-            html.H5(name, className="mb-1"),
+            html.Div(initials, className="avatar-circle", style={"backgroundColor": color}),
+            html.H6(name, className="mb-0 fw-bold"),
             html.A(email, href=f"mailto:{email}", className="text-muted small d-block mb-2"),
-            html.P(role, className="fw-semibold small mb-1"),
-            html.Ul([html.Li(d, className="small") for d in departments], className="mb-0 ps-3"),
+            html.Span(role, className="badge rounded-pill mb-2",
+                      style={"backgroundColor": color, "fontSize": "11px"}),
+            html.Ul([html.Li(d, className="small text-muted") for d in departments],
+                    className="mb-0 ps-3") if departments else None,
         ])
-    ], className="h-100 shadow-sm")
+    ], className="h-100 shadow-sm person-card border-0")
 
 
 TEAM = [
@@ -354,7 +444,8 @@ TEAM = [
 
 def contact_cards():
     return dbc.Row(
-        [dbc.Col(person_card(**m), width=3) for m in TEAM],
+        [dbc.Col(person_card(**m, color=AVATAR_COLORS[i % len(AVATAR_COLORS)]), width=3)
+         for i, m in enumerate(TEAM)],
         className="g-4",
     )
 
@@ -368,10 +459,11 @@ def contact_tab():
 
 def readme_tab():
     return dbc.Container([
-        html.H3("Dashboard Guide", className="mt-3 mb-1"),
+        html.H3("ProtoPure — Dashboard Guide", className="mt-3 mb-1"),
         html.P(
-            "This dashboard explores protein purification conditions extracted from scientific "
-            "literature using Large Language Models (LLMs). Click a section below to expand it.",
+            "ProtoPure is a LLM-enhanced tool for the systematic extraction and comparison of "
+            "protein purification conditions from scientific literature, designed to support "
+            "biochemical workflow design. Click a section below to expand it.",
             className="text-muted mb-4",
         ),
         dbc.Accordion([
@@ -438,7 +530,8 @@ def readme_tab():
                 html.P(
                     "Displays interactive clustering results from a grid search over embedding "
                     "models, community-size thresholds, and similarity thresholds. Each "
-                    "combination produces per-field UMAP plots and cluster-size distributions.",
+                    "combination produces per-field UMAP plots and cluster-size distributions "
+                    "rendered natively in Plotly — hover, zoom, and pan are fully interactive.",
                     className="mb-3",
                 ),
                 html.H6("Parameter dropdowns", className="fw-bold"),
@@ -463,20 +556,37 @@ def readme_tab():
                         "Which extraction field to cluster: enzyme name, organism, lysis buffer, "
                         "inducer, etc. Clustering is performed independently per field.",
                     ]),
+                    dbc.ListGroupItem([
+                        html.Span("Show top N clusters  ", className="fw-semibold"),
+                        "Limits the number of distinctly coloured clusters shown. "
+                        "The largest N clusters (by entry count) each get a unique colour; "
+                        "all remaining clusters are grouped into a single light-gray "
+                        "\"Other\" trace so they remain visible without adding colour noise. "
+                        "Choose \"All\" to colour every cluster individually (slow for large grids).",
+                    ]),
                 ], flush=True, className="mb-3"),
                 html.H6("Plot type", className="fw-bold mt-2"),
                 dbc.ListGroup([
                     dbc.ListGroupItem([
                         html.Span("UMAP cluster plot  ", className="fw-semibold"),
                         "2D projection of all field values coloured by cluster membership. "
-                        "Hover over points to see the original text, PMID, and cluster label. "
-                        "Points labelled NOISE were not assigned to any cluster.",
+                        "Hover over any point to see the original text, PMID, and cluster label. "
+                        "Noise points (not assigned to any cluster) are shown in light gray at "
+                        "low opacity. The plot title shows the total number of clusters and noise points.",
                     ]),
                     dbc.ListGroupItem([
                         html.Span("Cluster distribution  ", className="fw-semibold"),
-                        "Bar chart showing the number of entries per cluster for the selected field.",
+                        "Bar chart of the top-N clusters sorted by size (largest first). "
+                        "Useful for quickly seeing which conditions are most common across the dataset.",
                     ]),
                 ], flush=True, className="mb-3"),
+                html.H6("Recommended starting parameters", className="fw-bold mt-2"),
+                html.P([
+                    "For a clear overview of enzyme name clustering, try: ",
+                    html.Span("NeuML/pubmedbert-base-embeddings", className="font-monospace small"),
+                    " · min = 10 · threshold = 0.7 · top N = 20. "
+                    "This yields ~167 clusters with well-sized groups and manageable noise.",
+                ], className="mb-3"),
                 html.H6("Metrics table", className="fw-bold mt-2"),
                 html.P(
                     "Shows Silhouette score (cosine) and Davies-Bouldin index for every field "
@@ -524,12 +634,17 @@ def readme_tab():
 # App layout
 # ---------------------------------------------------------------------------
 app.layout = dbc.Container([
-    dbc.NavbarSimple(
-        brand="LLM Extractor — Results Dashboard",
-        brand_href="#",
-        color="primary",
+    dbc.Navbar(
+        dbc.Container([
+            html.Div([
+                html.Span("⚗ ProtoPure", className="navbar-brand text-white"),
+                html.Span("LLM-Enhanced Systematic Extraction and Comparison of Protein Purification Conditions",
+                          className="navbar-subtitle text-white"),
+            ]),
+        ], fluid=True),
+        color="#1a3a5c",
         dark=True,
-        className="mb-3 rounded",
+        className="mb-3 rounded shadow-sm px-3 py-2",
     ),
     dbc.Tabs([
         dbc.Tab(label="Extraction Data",    tab_id="tab-proteins"),
@@ -562,13 +677,15 @@ def render_tab(tab):
 
 @app.callback(
     Output("protein-table", "data"),
+    Output("protein-table", "columns"),
     Output("protein-table", "tooltip_data"),
     Output("protein-count", "children"),
     Input("filter-group", "value"),
     Input("search-field", "value"),
     Input("search-value", "value"),
+    Input("col-selector", "value"),
 )
-def filter_proteins(groups, search_field, search_value):
+def filter_proteins(groups, search_field, search_value, selected_cols):
     filtered = df.copy()
     if groups:
         mask = filtered["groups"].apply(
@@ -580,13 +697,18 @@ def filter_proteins(groups, search_field, search_value):
             filtered[search_field].astype(str).str.contains(search_value, case=False, na=False)
         ]
 
-    records = filtered[TABLE_FIELDS].to_dict("records")
+    cols = selected_cols if selected_cols else DEFAULT_COLS
+    # Always include pmid in data even if hidden, so row-click detail still works
+    data_cols = list(dict.fromkeys(["pmid"] + cols))
+    col_defs = [{"name": FIELD_LABELS.get(c, c), "id": c} for c in cols]
+
+    records = filtered[data_cols].to_dict("records")
     tooltips = [
-        {col: {"value": str(row.get(col, "")), "type": "markdown"} for col in TABLE_FIELDS}
+        {c: {"value": str(row.get(c, "")), "type": "markdown"} for c in cols}
         for row in records
     ]
     label = f"Showing {len(filtered):,} of {len(df):,} proteins"
-    return records, tooltips, label
+    return records, col_defs, tooltips, label
 
 
 @app.callback(
@@ -703,6 +825,72 @@ def show_detail(selected_rows, table_data):
             dbc.CardBody(html.Span("No UniProt entries linked to this PMID.", className="text-muted small")),
         ], className="mb-3", color="light")
 
+    # --- All proteins from this PMID (conditions table) ---
+    all_proteins = entry.get("proteins", []) or []
+    CONDITION_COLS = [
+        "enzyme_name", "organism_source", "strain", "expression_strain",
+        "plasmid", "molecular_weight", "medium_name", "inducer",
+        "induction_temperature", "lysis_buffer", "elution_buffer", "desalting_process",
+    ]
+    cond_records = [
+        {c: (p.get(c) or "") for c in CONDITION_COLS}
+        for p in all_proteins
+    ]
+    # Mark the selected protein
+    sel_idx = next(
+        (i for i, p in enumerate(all_proteins)
+         if all(str(p.get(c, "") or "") == str(row.get(c, "") or "") for c in CONDITION_COLS[:3])),
+        None,
+    )
+    cond_col_defs = [
+        {"name": c.replace("_", " ").title(), "id": c} for c in CONDITION_COLS
+    ]
+    conditions_card = dbc.Card([
+        dbc.CardHeader(
+            html.Span(
+                f"All purification conditions from PMID {pmid}  ({len(all_proteins)} protein{'s' if len(all_proteins) != 1 else ''})",
+                className="fw-bold",
+            )
+        ),
+        dbc.CardBody(
+            dash_table.DataTable(
+                columns=cond_col_defs,
+                data=cond_records,
+                page_size=10,
+                sort_action="native",
+                style_table={"overflowX": "auto"},
+                style_cell={
+                    "fontSize": "12px",
+                    "padding": "5px 10px",
+                    "textAlign": "left",
+                    "maxWidth": "260px",
+                    "overflow": "hidden",
+                    "textOverflow": "ellipsis",
+                    "whiteSpace": "nowrap",
+                },
+                style_header={
+                    "fontWeight": "700",
+                    "backgroundColor": "#1a3a5c",
+                    "color": "#ffffff",
+                    "fontSize": "11px",
+                    "textTransform": "uppercase",
+                    "letterSpacing": "0.04em",
+                },
+                style_data_conditional=(
+                    [{"if": {"row_index": "odd"}, "backgroundColor": "#eef4fd"}] +
+                    ([{"if": {"row_index": sel_idx}, "backgroundColor": "#cfe2ff",
+                       "border": "1px solid #9ec5fe"}] if sel_idx is not None else [])
+                ),
+                tooltip_data=[
+                    {c: {"value": str(r.get(c, "")), "type": "markdown"} for c in CONDITION_COLS}
+                    for r in cond_records
+                ],
+                tooltip_delay=0,
+                tooltip_duration=None,
+            ) if cond_records else html.Span("No protein conditions available.", className="text-muted small")
+        ),
+    ], className="mb-3")
+
     return html.Div([
         html.Hr(),
         html.H6("Selected Row Detail", className="fw-semibold mb-3"),
@@ -713,33 +901,300 @@ def show_detail(selected_rows, table_data):
         dbc.Row([
             dbc.Col(paper_card, width=12),
         ]),
+        dbc.Row([
+            dbc.Col(conditions_card, width=12),
+        ]),
     ])
 
 
+# Qualitative color palette — high-contrast, colorblind-friendly base
+_PALETTE = [
+    "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
+    "#8c564b", "#e377c2", "#17becf", "#bcbd22", "#393b79",
+    "#637939", "#8c6d31", "#843c39", "#7b4173", "#3182bd",
+    "#e6550d", "#31a354", "#756bb1", "#636363", "#6baed6",
+]
+_NOISE_COLOR = "#c0c0c0"
+
+
+def _load_cluster_csv(model, min_val, threshold):
+    """Return the ALL_FIELDS dataframe or None."""
+    path = os.path.join(GRID_BASE, f"model={model}", f"min={min_val}",
+                        f"t={threshold}_ALL_FIELDS.csv")
+    if not os.path.isfile(path):
+        return None
+    return pd.read_csv(path)
+
+
+def _umap_figure(cdf, field_name, top_n=20):
+    """Build a UMAP scatter figure from a filtered cluster DataFrame."""
+    cdf = cdf.reset_index(drop=True)
+    noise_mask = cdf["cluster_id"] == -1
+    non_noise  = cdf[~noise_mask]
+
+    # Rank clusters by size; optionally cap at top_n
+    cluster_sizes = non_noise.groupby("cluster_id").size().sort_values(ascending=False)
+    if top_n and top_n > 0:
+        top_ids = set(cluster_sizes.index[:top_n])
+    else:
+        top_ids = set(cluster_sizes.index)
+
+    fig = go.Figure()
+
+    # NOISE — thin gray, low opacity, drawn first
+    if noise_mask.any():
+        nd = cdf[noise_mask]
+        fig.add_trace(go.Scattergl(
+            x=nd["x"], y=nd["y"],
+            mode="markers",
+            name="Noise",
+            marker=dict(color=_NOISE_COLOR, size=4, opacity=0.25),
+            hovertemplate="<b>Noise</b><br>%{customdata[0]}<br>PMID: %{text}<extra></extra>",
+            customdata=list(zip(nd["value"].str[:80].tolist(),
+                                nd["protein_index"].astype(str).tolist())),
+            text=nd["key"].astype(str),
+            showlegend=True,
+        ))
+
+    # "Other clusters" bucket — light gray, slightly more visible than noise
+    other_mask = ~noise_mask & ~cdf["cluster_id"].isin(top_ids)
+    if other_mask.any():
+        od = cdf[other_mask]
+        fig.add_trace(go.Scattergl(
+            x=od["x"], y=od["y"],
+            mode="markers",
+            name=f"Other ({len(cluster_sizes) - len(top_ids)} clusters)",
+            marker=dict(color="#adb5bd", size=5, opacity=0.35),
+            hovertemplate="<b>%{customdata[0]}</b><br>%{customdata[2]}<br>PMID: %{text}<extra></extra>",
+            customdata=list(zip(
+                ("Cluster " + od["cluster_id"].astype(str)).tolist(),
+                od["protein_index"].astype(str).tolist(),
+                od["value"].str[:80].tolist(),
+            )),
+            text=od["key"].astype(str),
+            showlegend=True,
+        ))
+
+    # Top-N named clusters — distinct colors, larger markers
+    for rank, cid in enumerate(cluster_sizes.index[:len(top_ids)]):
+        cd = non_noise[non_noise["cluster_id"] == cid]
+        label = cd["cluster_label_short"].iloc[0][:35] if len(cd) else f"C{cid}"
+        color = _PALETTE[rank % len(_PALETTE)]
+        fig.add_trace(go.Scattergl(
+            x=cd["x"], y=cd["y"],
+            mode="markers",
+            name=f"[{cid}] {label}",
+            marker=dict(color=color, size=7, opacity=0.80,
+                        line=dict(width=0.4, color="rgba(255,255,255,0.6)")),
+            hovertemplate=(
+                "<b>[%{meta}] %{customdata[0]}</b><br>"
+                "%{customdata[2]}<br>"
+                "PMID: %{text}<extra></extra>"
+            ),
+            meta=cid,
+            customdata=list(zip(
+                cd["cluster_label_short"].str[:50].tolist(),
+                cd["protein_index"].astype(str).tolist(),
+                cd["value"].str[:100].tolist(),
+            )),
+            text=cd["key"].astype(str),
+        ))
+
+    n_total   = len(cluster_sizes)
+    n_shown   = len(top_ids)
+    n_noise   = noise_mask.sum()
+    title_txt = (
+        f"UMAP — <b>{field_name.replace('_', ' ').title()}</b>"
+        f"  ·  top {n_shown}/{n_total} clusters shown  ·  {n_noise:,} noise pts"
+    )
+    fig.update_layout(
+        title=dict(text=title_txt, font=dict(size=13)),
+        plot_bgcolor="#f9fafc",
+        paper_bgcolor="#ffffff",
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, title=""),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, title=""),
+        legend=dict(
+            title=dict(text="Cluster", font=dict(size=11)),
+            font=dict(size=10),
+            itemsizing="constant",
+            bordercolor="#dee2e6", borderwidth=1,
+            tracegroupgap=1,
+        ),
+        margin=dict(l=20, r=200, t=50, b=20),
+        hoverlabel=dict(bgcolor="white", font_size=12, namelength=-1),
+    )
+    return fig
+
+
+def _distribution_figure(cdf, field_name, top_n=20):
+    """Build a cluster-size bar chart from a filtered cluster DataFrame."""
+    cdf = cdf.reset_index(drop=True)
+    counts = (
+        cdf[cdf["cluster_id"] != -1]
+        .groupby(["cluster_id", "cluster_label_short"], sort=False)
+        .size()
+        .reset_index(name="count")
+        .sort_values("count", ascending=False)
+    )
+    if top_n and top_n > 0:
+        counts = counts.head(top_n)
+
+    colors = [_PALETTE[i % len(_PALETTE)] for i in range(len(counts))]
+    labels = counts["cluster_label_short"].str[:45]
+
+    fig = go.Figure(go.Bar(
+        x=labels,
+        y=counts["count"],
+        marker_color=colors,
+        marker_line_color="rgba(255,255,255,0.6)",
+        marker_line_width=0.8,
+        opacity=0.88,
+        hovertemplate="<b>%{x}</b><br>Count: %{y:,}<extra></extra>",
+    ))
+    fig.update_layout(
+        title=dict(
+            text=f"Cluster Sizes — <b>{field_name.replace('_', ' ').title()}</b>"
+                 + (f"  (top {top_n})" if top_n else ""),
+            font=dict(size=13),
+        ),
+        plot_bgcolor="#f9fafc",
+        paper_bgcolor="#ffffff",
+        xaxis=dict(
+            showgrid=False, zeroline=False,
+            tickangle=-45, tickfont=dict(size=10),
+        ),
+        yaxis=dict(
+            showgrid=True, gridcolor="#e5e7eb", zeroline=False,
+            title="# entries",
+        ),
+        margin=dict(l=50, r=20, t=50, b=160),
+        hoverlabel=dict(bgcolor="white", font_size=12),
+        bargap=0.25,
+    )
+    return fig
+
+
 @app.callback(
-    Output("cluster-iframe", "src"),
+    Output("cluster-graph", "figure"),
     Output("plot-status", "children"),
     Input("dd-model", "value"),
     Input("dd-min", "value"),
     Input("dd-threshold", "value"),
     Input("dd-field", "value"),
     Input("plot-type", "value"),
+    Input("top-n-clusters", "value"),
 )
-def update_cluster_plot(model, min_val, threshold, field, plot_type):
+def update_cluster_plot(model, min_val, threshold, field, plot_type, top_n):
+    empty_fig = go.Figure()
+    empty_fig.update_layout(paper_bgcolor="#ffffff", plot_bgcolor="#f9fafc")
     if not all([model, min_val, threshold, field, plot_type]):
-        return "", "Select all parameters above."
+        return empty_fig, "Select all parameters above."
 
-    filename = (
-        f"t={threshold}_{field}_cluster.html"
-        if plot_type == "cluster"
-        else f"t={threshold}_clusters_distribution_{field}.html"
-    )
-    rel_path  = f"model={model}/min={min_val}/{filename}"
-    full_path = os.path.join(GRID_BASE, f"model={model}", f"min={min_val}", filename)
+    cdf = _load_cluster_csv(model, min_val, threshold)
+    if cdf is None:
+        return empty_fig, f"Data file not found for model={model} min={min_val} t={threshold}"
 
-    if not os.path.isfile(full_path):
-        return "", f"File not found: {rel_path}"
-    return f"/grid_files/{rel_path}", ""
+    field_df = cdf[cdf["field"] == field]
+    if field_df.empty:
+        return empty_fig, f"No data for field '{field}' in this parameter combination."
+
+    n = top_n or 0
+    if plot_type == "cluster":
+        return _umap_figure(field_df, field, top_n=n), ""
+    else:
+        return _distribution_figure(field_df, field, top_n=n), ""
+
+
+_CONDITION_COLS = [
+    "enzyme_name", "organism_source", "strain", "expression_strain",
+    "plasmid", "molecular_weight", "medium_name", "inducer",
+    "induction_temperature", "lysis_buffer", "elution_buffer", "desalting_process",
+]
+
+
+@app.callback(
+    Output("cluster-point-detail", "children"),
+    Input("cluster-graph", "clickData"),
+    State("dd-field", "value"),
+)
+def show_cluster_point_detail(click_data, field):
+    if not click_data:
+        return html.Div()
+
+    point = click_data["points"][0]
+    pmid = str(point.get("text", ""))
+    customdata = point.get("customdata", [])
+
+    # customdata layout: [label_or_value, protein_index, value_text]  (noise: [value, protein_index])
+    try:
+        protein_index = int(customdata[1])
+    except (IndexError, ValueError, TypeError):
+        protein_index = 0
+
+    entry = RAW.get(pmid, {})
+    proteins = entry.get("proteins", []) or []
+    if not proteins:
+        return html.Div(f"No protein data for PMID {pmid}.", className="text-muted small mt-2")
+
+    protein_index = min(protein_index, len(proteins) - 1)
+    protein = proteins[protein_index]
+
+    # Field value that was clicked (used for context header)
+    clicked_value = str(customdata[0] if customdata else "")
+
+    # Conditions table: condition → value, skip empty
+    cond_rows = [
+        {"Condition": c.replace("_", " ").title(), "Value": str(protein.get(c) or "")}
+        for c in _CONDITION_COLS
+        if protein.get(c)
+    ]
+
+    m = META.get(pmid, {})
+    pubmed_link = html.A(f"PMID {pmid}", href=f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
+                         target="_blank", className="small")
+    paper_info = "  ·  ".join(filter(None, [m.get("source", ""), m.get("pub_date", "")]))
+
+    return html.Div([
+        dbc.Card([
+            dbc.CardHeader([
+                html.Span("Purification Conditions — ", className="fw-bold"),
+                pubmed_link,
+                html.Span(f"  ·  {paper_info}", className="text-muted small") if paper_info else None,
+                html.Span(f"  ·  {field.replace('_', ' ').title()}: ", className="text-muted small ms-2"),
+                html.Span(f'"{clicked_value[:80]}"', className="small fst-italic"),
+            ]),
+            dbc.CardBody(
+                dash_table.DataTable(
+                    columns=[{"name": c, "id": c} for c in ["Condition", "Value"]],
+                    data=cond_rows,
+                    style_table={"overflowX": "auto"},
+                    style_cell={
+                        "fontSize": "12px",
+                        "padding": "5px 10px",
+                        "textAlign": "left",
+                    },
+                    style_cell_conditional=[
+                        {"if": {"column_id": "Condition"},
+                         "fontWeight": "600", "width": "200px", "minWidth": "200px",
+                         "backgroundColor": "#f8f9fa"},
+                        {"if": {"column_id": "Value"},
+                         "whiteSpace": "normal", "height": "auto"},
+                    ],
+                    style_header={
+                        "fontWeight": "700",
+                        "backgroundColor": "#1a3a5c",
+                        "color": "#ffffff",
+                        "fontSize": "11px",
+                        "textTransform": "uppercase",
+                        "letterSpacing": "0.04em",
+                    },
+                    style_data_conditional=[
+                        {"if": {"row_index": "odd"}, "backgroundColor": "#eef4fd"},
+                    ],
+                ) if cond_rows else html.Span("No conditions recorded for this protein.", className="text-muted small")
+            ),
+        ], className="mb-3"),
+    ])
 
 
 @app.callback(
