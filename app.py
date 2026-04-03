@@ -308,161 +308,154 @@ def grid_metrics_tab():
     ], fluid=True, className="pt-3")
 
 
-def section(title, body_items):
-    """Reusable card section for the README page."""
-    return dbc.Card([
-        dbc.CardHeader(html.H5(title, className="mb-0")),
-        dbc.CardBody(body_items),
-    ], className="mb-4")
-
-
 def readme_tab():
     return dbc.Container([
         html.H3("Dashboard Guide", className="mt-3 mb-1"),
         html.P(
             "This dashboard explores protein purification conditions extracted from scientific "
-            "literature using Large Language Models (LLMs). Use the tabs at the top to navigate "
-            "between pages.",
+            "literature using Large Language Models (LLMs). Click a section below to expand it.",
             className="text-muted mb-4",
         ),
+        dbc.Accordion([
 
-        # ── Extraction Data ──────────────────────────────────────────────────
-        section("Extraction Data", [
-            html.P(
-                "Shows all proteins extracted by the LLM pipeline, one row per protein. "
-                "Each row combines the extracted purification conditions with paper metadata "
-                "and linked UniProt entries.",
-                className="mb-3",
-            ),
-            html.H6("Filters", className="fw-bold"),
-            dbc.ListGroup([
-                dbc.ListGroupItem([
-                    html.Span("Filter by group  ", className="fw-semibold"),
-                    "Select one or more protein families (azoreductases, sdrs, sams, etc.) "
-                    "to restrict the table to papers from that collection. Multiple groups "
-                    "can be selected at once.",
-                ]),
-                dbc.ListGroupItem([
-                    html.Span("Search by  ", className="fw-semibold"),
-                    "Choose which field to search: PMID, Enzyme name, Organism, Expression strain, "
-                    "Plasmid, Inducer, UniProt ID, Journal, or Paper title.",
-                ]),
-                dbc.ListGroupItem([
-                    html.Span("Search value  ", className="fw-semibold"),
-                    "Type any text to filter rows. The search is case-insensitive and matches "
-                    "partial strings (e.g. 'coli' matches 'Escherichia coli').",
-                ]),
-                dbc.ListGroupItem([
-                    html.Span("✕ Clear  ", className="fw-semibold"),
-                    "Resets both the search value and the group filter, returning to the full dataset.",
-                ]),
-            ], flush=True, className="mb-3"),
-            html.H6("Table", className="fw-bold mt-2"),
-            dbc.ListGroup([
-                dbc.ListGroupItem([
-                    html.Span("Hover over any cell  ", className="fw-semibold"),
-                    "to see the full text if it is truncated.",
-                ]),
-                dbc.ListGroupItem([
-                    html.Span("Click a column header  ", className="fw-semibold"),
-                    "to sort by that column.",
-                ]),
-                dbc.ListGroupItem([
-                    html.Span("Click a row  ", className="fw-semibold"),
-                    "to open the detail panel below the table, showing the full extracted "
-                    "protein fields, all linked UniProt entries (with links to uniprot.org), "
-                    "and the paper metadata (title, journal, date, group badges, PubMed link, "
-                    "and full-text link where available).",
-                ]),
-            ], flush=True, className="mb-3"),
-            html.H6("⬇ Download CSV", className="fw-bold mt-2"),
-            html.P(
-                "Downloads the currently visible (filtered) table as a CSV file. "
-                "Apply any filters first — the download reflects exactly what is shown.",
-                className="mb-0",
-            ),
-        ]),
+            # ── Extraction Data ───────────────────────────────────────────────
+            dbc.AccordionItem(title="Extraction Data", children=[
+                html.P(
+                    "Shows all proteins extracted by the LLM pipeline, one row per protein. "
+                    "Each row combines the extracted purification conditions with paper metadata "
+                    "and linked UniProt entries.",
+                    className="mb-3",
+                ),
+                html.H6("Filters", className="fw-bold"),
+                dbc.ListGroup([
+                    dbc.ListGroupItem([
+                        html.Span("Filter by group  ", className="fw-semibold"),
+                        "Select one or more protein families (azoreductases, sdrs, sams, etc.) "
+                        "to restrict the table to papers from that collection. Multiple groups "
+                        "can be selected at once.",
+                    ]),
+                    dbc.ListGroupItem([
+                        html.Span("Search by  ", className="fw-semibold"),
+                        "Choose which field to search: PMID, Enzyme name, Organism, Expression strain, "
+                        "Plasmid, Inducer, UniProt ID, Journal, or Paper title.",
+                    ]),
+                    dbc.ListGroupItem([
+                        html.Span("Search value  ", className="fw-semibold"),
+                        "Type any text to filter rows. The search is case-insensitive and matches "
+                        "partial strings (e.g. 'coli' matches 'Escherichia coli').",
+                    ]),
+                    dbc.ListGroupItem([
+                        html.Span("✕ Clear  ", className="fw-semibold"),
+                        "Resets both the search value and the group filter, returning to the full dataset.",
+                    ]),
+                ], flush=True, className="mb-3"),
+                html.H6("Table", className="fw-bold mt-2"),
+                dbc.ListGroup([
+                    dbc.ListGroupItem([
+                        html.Span("Hover over any cell  ", className="fw-semibold"),
+                        "to see the full text if it is truncated.",
+                    ]),
+                    dbc.ListGroupItem([
+                        html.Span("Click a column header  ", className="fw-semibold"),
+                        "to sort by that column.",
+                    ]),
+                    dbc.ListGroupItem([
+                        html.Span("Click a row  ", className="fw-semibold"),
+                        "to open the detail panel below the table, showing the full extracted "
+                        "protein fields, all linked UniProt entries (with links to uniprot.org), "
+                        "and the paper metadata (title, journal, date, group badges, PubMed link, "
+                        "and full-text link where available).",
+                    ]),
+                ], flush=True, className="mb-3"),
+                html.H6("⬇ Download CSV", className="fw-bold mt-2"),
+                html.P(
+                    "Downloads the currently visible (filtered) table as a CSV file. "
+                    "Apply any filters first — the download reflects exactly what is shown.",
+                    className="mb-0",
+                ),
+            ]),
 
-        # ── Clustering Explorer ───────────────────────────────────────────────
-        section("Clustering Explorer", [
-            html.P(
-                "Displays interactive clustering results from a grid search over embedding "
-                "models, community-size thresholds, and similarity thresholds. Each "
-                "combination produces per-field UMAP plots and cluster-size distributions.",
-                className="mb-3",
-            ),
-            html.H6("Parameter dropdowns", className="fw-bold"),
-            dbc.ListGroup([
-                dbc.ListGroupItem([
-                    html.Span("Model  ", className="fw-semibold"),
-                    "The sentence-embedding model used to encode field values "
-                    "(e.g. PubMedBERT, BioBERT, SapBERT).",
-                ]),
-                dbc.ListGroupItem([
-                    html.Span("Min community size  ", className="fw-semibold"),
-                    "Minimum number of entries required to form a cluster. "
-                    "Lower values produce more (smaller) clusters.",
-                ]),
-                dbc.ListGroupItem([
-                    html.Span("Threshold  ", className="fw-semibold"),
-                    "Cosine similarity threshold for grouping entries into a cluster. "
-                    "Higher values require closer matches (tighter clusters).",
-                ]),
-                dbc.ListGroupItem([
-                    html.Span("Field  ", className="fw-semibold"),
-                    "Which extraction field to cluster: enzyme name, organism, lysis buffer, "
-                    "inducer, etc. Clustering is performed independently per field.",
-                ]),
-            ], flush=True, className="mb-3"),
-            html.H6("Plot type", className="fw-bold mt-2"),
-            dbc.ListGroup([
-                dbc.ListGroupItem([
-                    html.Span("UMAP cluster plot  ", className="fw-semibold"),
-                    "2D projection of all field values coloured by cluster membership. "
-                    "Hover over points to see the original text, PMID, and cluster label. "
-                    "Points labelled NOISE were not assigned to any cluster.",
-                ]),
-                dbc.ListGroupItem([
-                    html.Span("Cluster distribution  ", className="fw-semibold"),
-                    "Bar chart showing the number of entries per cluster for the selected field.",
-                ]),
-            ], flush=True, className="mb-3"),
-            html.H6("Metrics table", className="fw-bold mt-2"),
-            html.P(
-                "Shows Silhouette score (cosine) and Davies-Bouldin index for every field "
-                "under the selected model / min-size / threshold combination. "
-                "Higher Silhouette (highlighted green above 0.6) indicates well-separated clusters. "
-                "Lower Davies-Bouldin indicates more compact, better-separated clusters.",
-                className="mb-0",
-            ),
-        ]),
+            # ── Clustering Explorer ───────────────────────────────────────────
+            dbc.AccordionItem(title="Clustering Explorer", children=[
+                html.P(
+                    "Displays interactive clustering results from a grid search over embedding "
+                    "models, community-size thresholds, and similarity thresholds. Each "
+                    "combination produces per-field UMAP plots and cluster-size distributions.",
+                    className="mb-3",
+                ),
+                html.H6("Parameter dropdowns", className="fw-bold"),
+                dbc.ListGroup([
+                    dbc.ListGroupItem([
+                        html.Span("Model  ", className="fw-semibold"),
+                        "The sentence-embedding model used to encode field values "
+                        "(e.g. PubMedBERT, BioBERT, SapBERT).",
+                    ]),
+                    dbc.ListGroupItem([
+                        html.Span("Min community size  ", className="fw-semibold"),
+                        "Minimum number of entries required to form a cluster. "
+                        "Lower values produce more (smaller) clusters.",
+                    ]),
+                    dbc.ListGroupItem([
+                        html.Span("Threshold  ", className="fw-semibold"),
+                        "Cosine similarity threshold for grouping entries into a cluster. "
+                        "Higher values require closer matches (tighter clusters).",
+                    ]),
+                    dbc.ListGroupItem([
+                        html.Span("Field  ", className="fw-semibold"),
+                        "Which extraction field to cluster: enzyme name, organism, lysis buffer, "
+                        "inducer, etc. Clustering is performed independently per field.",
+                    ]),
+                ], flush=True, className="mb-3"),
+                html.H6("Plot type", className="fw-bold mt-2"),
+                dbc.ListGroup([
+                    dbc.ListGroupItem([
+                        html.Span("UMAP cluster plot  ", className="fw-semibold"),
+                        "2D projection of all field values coloured by cluster membership. "
+                        "Hover over points to see the original text, PMID, and cluster label. "
+                        "Points labelled NOISE were not assigned to any cluster.",
+                    ]),
+                    dbc.ListGroupItem([
+                        html.Span("Cluster distribution  ", className="fw-semibold"),
+                        "Bar chart showing the number of entries per cluster for the selected field.",
+                    ]),
+                ], flush=True, className="mb-3"),
+                html.H6("Metrics table", className="fw-bold mt-2"),
+                html.P(
+                    "Shows Silhouette score (cosine) and Davies-Bouldin index for every field "
+                    "under the selected model / min-size / threshold combination. "
+                    "Higher Silhouette (highlighted green above 0.6) indicates well-separated clusters. "
+                    "Lower Davies-Bouldin indicates more compact, better-separated clusters.",
+                    className="mb-0",
+                ),
+            ]),
 
-        # ── Grid Metrics ──────────────────────────────────────────────────────
-        section("Grid Metrics", [
-            html.P(
-                "Displays summary heatmap images that compare clustering quality across "
-                "all threshold / min-community-size combinations for a given model.",
-                className="mb-3",
-            ),
-            dbc.ListGroup([
-                dbc.ListGroupItem([
-                    html.Span("Model  ", className="fw-semibold"),
-                    "Select the embedding model whose heatmaps you want to view.",
-                ]),
-                dbc.ListGroupItem([
-                    html.Span("Metric  ", className="fw-semibold"),
-                    html.Ul([
-                        html.Li([html.Span("silhouette  ", className="fw-semibold"),
-                                 "— ranges from -1 to 1; higher is better."]),
-                        html.Li([html.Span("davies_bouldin  ", className="fw-semibold"),
-                                 "— non-negative; lower is better."]),
-                        html.Li([html.Span("n_clusters  ", className="fw-semibold"),
-                                 "— number of clusters found at each parameter combination."]),
-                    ], className="mb-0 mt-1"),
-                ]),
-            ], flush=True),
-        ]),
+            # ── Grid Metrics ──────────────────────────────────────────────────
+            dbc.AccordionItem(title="Grid Metrics", children=[
+                html.P(
+                    "Displays summary heatmap images that compare clustering quality across "
+                    "all threshold / min-community-size combinations for a given model.",
+                    className="mb-3",
+                ),
+                dbc.ListGroup([
+                    dbc.ListGroupItem([
+                        html.Span("Model  ", className="fw-semibold"),
+                        "Select the embedding model whose heatmaps you want to view.",
+                    ]),
+                    dbc.ListGroupItem([
+                        html.Span("Metric  ", className="fw-semibold"),
+                        html.Ul([
+                            html.Li([html.Span("silhouette  ", className="fw-semibold"),
+                                     "— ranges from -1 to 1; higher is better."]),
+                            html.Li([html.Span("davies_bouldin  ", className="fw-semibold"),
+                                     "— non-negative; lower is better."]),
+                            html.Li([html.Span("n_clusters  ", className="fw-semibold"),
+                                     "— number of clusters found at each parameter combination."]),
+                        ], className="mb-0 mt-1"),
+                    ]),
+                ], flush=True),
+            ]),
 
+        ], start_collapsed=True, always_open=True),
     ], fluid=True, className="pt-3")
 
 
