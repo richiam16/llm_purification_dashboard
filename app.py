@@ -308,6 +308,64 @@ def grid_metrics_tab():
     ], fluid=True, className="pt-3")
 
 
+def person_card(name, email, role, departments):
+    return dbc.Card([
+        dbc.CardBody([
+            html.H5(name, className="mb-1"),
+            html.A(email, href=f"mailto:{email}", className="text-muted small d-block mb-2"),
+            html.P(role, className="fw-semibold small mb-1"),
+            html.Ul([html.Li(d, className="small") for d in departments], className="mb-0 ps-3"),
+        ])
+    ], className="h-100 shadow-sm")
+
+
+TEAM = [
+    dict(
+        name="Ricardo Almada Monter",
+        email="ralmadamonter@ucsd.edu",
+        role="Graduate Student Researcher",
+        departments=["Department of Chemistry & Biochemistry, UC San Diego"],
+    ),
+    dict(
+        name="Jose Martinez Lomeli",
+        email="lomeli90@gmail.com",
+        role="Independent Researcher",
+        departments=[],
+    ),
+    dict(
+        name="Erika Garay",
+        email="ecgaray@health.ucsd.edu",
+        role="Staff Scientist",
+        departments=[
+            "Skaggs School of Pharmacy and Pharmaceutical Sciences, UC San Diego",
+        ],
+    ),
+    dict(
+        name="Adrian Jinich, PhD",
+        email="ajinich@health.ucsd.edu",
+        role="Assistant Professor",
+        departments=[
+            "Skaggs School of Pharmacy and Pharmaceutical Sciences, UC San Diego",
+            "Department of Chemistry & Biochemistry, UC San Diego",
+        ],
+    ),
+]
+
+
+def contact_cards():
+    return dbc.Row(
+        [dbc.Col(person_card(**m), width=3) for m in TEAM],
+        className="g-4",
+    )
+
+
+def contact_tab():
+    return dbc.Container([
+        html.H3("Research Team", className="mt-3 mb-4"),
+        contact_cards(),
+    ], fluid=True, className="pt-3")
+
+
 def readme_tab():
     return dbc.Container([
         html.H3("Dashboard Guide", className="mt-3 mb-1"),
@@ -455,6 +513,9 @@ def readme_tab():
                 ], flush=True),
             ]),
 
+            # ── Contact ───────────────────────────────────────────────────────
+            dbc.AccordionItem(title="Contact", children=[contact_cards()]),
+
         ], start_collapsed=True, always_open=True),
     ], fluid=True, className="pt-3")
 
@@ -475,6 +536,7 @@ app.layout = dbc.Container([
         dbc.Tab(label="Clustering Explorer",tab_id="tab-clustering"),
         dbc.Tab(label="Grid Metrics",       tab_id="tab-grid-metrics"),
         dbc.Tab(label="README",             tab_id="tab-readme"),
+        dbc.Tab(label="Contact",            tab_id="tab-contact"),
     ], id="main-tabs", active_tab="tab-proteins"),
     html.Div(id="tab-content", className="mt-2"),
 ], fluid=True)
@@ -489,6 +551,8 @@ def render_tab(tab):
         return proteins_tab()
     elif tab == "tab-readme":
         return readme_tab()
+    elif tab == "tab-contact":
+        return contact_tab()
     elif tab == "tab-clustering":
         return clustering_tab()
     elif tab == "tab-grid-metrics":
