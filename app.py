@@ -65,6 +65,12 @@ ALL_GROUPS = sorted({
     g for entry in META.values() for g in entry.get("groups", [])
 })
 
+# PMID → set of groups, for fast cluster filtering
+PMID_GROUPS = {
+    pmid: set(entry.get("groups", []))
+    for pmid, entry in META.items()
+}
+
 # Column sets
 EXTRACTION_FIELDS = [
     "pmid", "enzyme_name", "organism_source", "strain", "expression_strain",
@@ -101,7 +107,29 @@ def scan_grid():
     )
 
 MODELS, MINS, THRESHOLDS, CLUSTER_FIELDS = scan_grid()
-METRIC_TYPES = ["silhouette", "davies_bouldin", "n_clusters"]
+METRIC_TYPES = ["silhouette_cosine", "davies_bouldin", "n_clusters"]
+
+# ---------------------------------------------------------------------------
+# Load all metrics CSVs into one DataFrame at startup
+# ---------------------------------------------------------------------------
+def load_all_metrics():
+    rows = []
+    for fpath in glob.glob(os.path.join(GRID_BASE, "model=*", "min=*", "t=*_FIELD_CLUSTER_METRICS.csv")):
+        parts = fpath.replace(GRID_BASE + os.sep, "").split(os.sep)
+        model = parts[0].replace("model=", "")
+        try:
+            chunk = pd.read_csv(fpath)
+            chunk["model"] = model
+            rows.append(chunk)
+        except Exception:
+            pass
+    if not rows:
+        return pd.DataFrame()
+    return pd.concat(rows, ignore_index=True)
+
+METRICS_DF = load_all_metrics()
+METRIC_FIELDS = sorted(METRICS_DF["field"].unique()) if not METRICS_DF.empty else []
+METRIC_MODELS = sorted(METRICS_DF["model"].unique()) if not METRICS_DF.empty else []
 
 # ---------------------------------------------------------------------------
 # Dash app
@@ -278,8 +306,9 @@ def proteins_tab():
         # Table
         dash_table.DataTable(
             id="protein-table",
-            columns=[{"name": FIELD_LABELS.get(c, c), "id": c} for c in DEFAULT_COLS],
-            data=df[DEFAULT_COLS].to_dict("records"),
+            columns=[{"name": FIELD_LABELS.get(c, c), "id": c} for c in TABLE_FIELDS],
+            hidden_columns=[c for c in TABLE_FIELDS if c not in DEFAULT_COLS],
+            data=df[TABLE_FIELDS].to_dict("records"),
             page_size=25,
             page_action="native",
             sort_action="native",
@@ -309,10 +338,6 @@ def proteins_tab():
                 {"if": {"row_index": "odd"}, "backgroundColor": "#eef4fd"},
                 {"if": {"state": "selected"}, "backgroundColor": "#cfe2ff", "border": "1px solid #9ec5fe"},
             ],
-            tooltip_data=[
-                {col: {"value": str(row.get(col, "")), "type": "markdown"} for col in TABLE_FIELDS}
-                for row in df[TABLE_FIELDS].to_dict("records")
-            ],
             tooltip_delay=0,
             tooltip_duration=None,
         ),
@@ -331,6 +356,16 @@ def clustering_tab():
         ], className="mb-3 g-3"),
         dbc.Row([
             dbc.Col([
+                html.Label("Filter by group", className="fw-semibold small mb-1"),
+                dcc.Dropdown(
+                    id="cluster-group-filter",
+                    options=[{"label": g, "value": g} for g in ALL_GROUPS],
+                    multi=True,
+                    placeholder="All groups",
+                    style={"fontSize": "13px"},
+                ),
+            ], width=4),
+            dbc.Col([
                 dbc.RadioItems(
                     id="plot-type",
                     options=[
@@ -339,9 +374,9 @@ def clustering_tab():
                     ],
                     value="cluster",
                     inline=True,
-                    className="mb-2",
+                    className="mb-2 mt-4",
                 ),
-            ], width=8),
+            ], width=4),
             dbc.Col([
                 html.Label("Show top N clusters", className="fw-semibold small mb-1"),
                 dcc.Dropdown(
@@ -366,29 +401,80 @@ def clustering_tab():
             ),
         ]),
         html.Div(id="cluster-point-detail", className="mt-2"),
+        dcc.Store(id="cluster-table-store"),
+        dcc.Download(id="download-cluster-csv"),
         html.Hr(),
         html.H6("Cluster metrics for selected parameters", className="mt-2 mb-2 fw-semibold"),
         dbc.Row([dbc.Col(html.Div(id="metrics-table-container"), width=12)]),
     ], fluid=True, className="pt-3")
 
 
+_METRIC_LABELS = {
+    "silhouette_cosine": "Silhouette Score",
+    "davies_bouldin":    "Davies-Bouldin Index",
+    "n_clusters":        "Number of Clusters",
+}
+
+
 def grid_metrics_tab():
-    metrics_dir = os.path.join(GRID_BASE, "metrics")
-    available = []
-    if os.path.isdir(metrics_dir):
-        for fname in sorted(os.listdir(metrics_dir)):
-            m = re.match(r"(silhouette|davies_bouldin|n_clusters)_heatmap__(.+)\.png$", fname)
-            if m:
-                available.append((m.group(1), m.group(2)))
-    model_shorts = sorted(set(x[1] for x in available))
+    if METRICS_DF.empty:
+        return dbc.Container([html.P("No metrics data found.", className="text-muted mt-3")])
 
     return dbc.Container([
+        html.Div([
+            dbc.Row([
+                dbc.Col([
+                    html.Label("Field", className="fw-semibold small mb-1"),
+                    dcc.Dropdown(
+                        id="dd-metrics-field",
+                        options=[{"label": f.replace("_", " ").title(), "value": f}
+                                 for f in METRIC_FIELDS],
+                        value=METRIC_FIELDS[0] if METRIC_FIELDS else None,
+                        clearable=False,
+                        style={"fontSize": "13px"},
+                    ),
+                ], width=4),
+                dbc.Col([
+                    html.Label("Metric", className="fw-semibold small mb-1"),
+                    dcc.Dropdown(
+                        id="dd-metrics-type",
+                        options=[{"label": v, "value": k} for k, v in _METRIC_LABELS.items()],
+                        value="silhouette_cosine",
+                        clearable=False,
+                        style={"fontSize": "13px"},
+                    ),
+                ], width=4),
+                dbc.Col([
+                    html.Label("Model (heatmap)", className="fw-semibold small mb-1"),
+                    dcc.Dropdown(
+                        id="dd-metrics-model",
+                        options=[{"label": m, "value": m} for m in METRIC_MODELS],
+                        value=METRIC_MODELS[0] if METRIC_MODELS else None,
+                        clearable=False,
+                        style={"fontSize": "13px"},
+                    ),
+                ], width=4),
+            ]),
+        ], className="filter-panel"),
         dbc.Row([
-            make_dropdown("Model", "dd-metrics-model", model_shorts,
-                          value=model_shorts[0] if model_shorts else None),
-            make_dropdown("Metric", "dd-metrics-type", METRIC_TYPES, value="silhouette"),
-        ], className="mb-3 g-3"),
-        dbc.Row([dbc.Col(html.Div(id="metrics-image-container"), width=12)]),
+            dbc.Col(
+                dcc.Graph(id="metrics-heatmap",
+                          config={"displayModeBar": True,
+                                  "toImageButtonOptions": {"format": "svg"}},
+                          style={"height": "420px"}),
+                width=6,
+            ),
+            dbc.Col(
+                dcc.Graph(id="metrics-model-compare",
+                          config={"displayModeBar": True,
+                                  "toImageButtonOptions": {"format": "svg"}},
+                          style={"height": "420px"}),
+                width=6,
+            ),
+        ], className="mt-3"),
+        html.Hr(),
+        html.H6("Best parameter combinations", className="fw-semibold mt-2 mb-2"),
+        html.Div(id="metrics-best-table"),
     ], fluid=True, className="pt-3")
 
 
@@ -450,6 +536,165 @@ def contact_cards():
     )
 
 
+def pipeline_tab():
+    code_block = (
+        "bash scripts/run_pipeline_extraction.sh \\\n"
+        "  -s scripts/ \\\n"
+        "  -u uniprot_tables/your_table.tsv.gz \\\n"
+        "  -a api_keys.txt \\\n"
+        "  -l api_keys_llama.txt \\\n"
+        "  -e \"your@email.com\" \\\n"
+        "  -U \"your@email.com\" \\\n"
+        "  -j jsons/output/ \\\n"
+        "  -o artifacts/ \\\n"
+        "  -g norag \\\n"
+        "  -M gpt-4.1-mini"
+    )
+    cluster_block = (
+        "python scripts/create_clustering_plots.py \\\n"
+        "  -j jsons/output/your_table_purification_methods_no_rag.json \\\n"
+        "  -o clusters/my_run \\\n"
+        "  -m neuml/pubmedbert-base-embeddings \\\n"
+        "  --clustering \\\n"
+        "  -min 5 \\\n"
+        "  -t 0.75"
+    )
+    return dbc.Container([
+        html.H3("How to Run the LLM Protein Purification Extraction Pipeline", className="mt-3 mb-1"),
+        html.P([
+            "Step-by-step instructions for running the automated extraction pipeline — "
+            "from a UniProt table to structured protein purification conditions. "
+            "All code is available at ",
+            html.A("github.com/jinichlab/llm_extractor",
+                   href="https://github.com/jinichlab/llm_extractor",
+                   target="_blank"),
+            ".",
+        ], className="text-muted mb-4"),
+
+        dbc.Accordion([
+
+            # ── Step 0: prerequisites ───────────────────────────────────────
+            dbc.AccordionItem(title="0 · Prerequisites", children=[
+                dbc.ListGroup([
+                    dbc.ListGroupItem([html.Code("conda"), " installed (Anaconda or Miniconda)."]),
+                    dbc.ListGroupItem([
+                        html.Strong("OpenAI API key"), " set as environment variable:",
+                        html.Pre("export OPENAI_API_KEY=\"sk-...\"",
+                                 className="bg-light p-2 rounded mt-1 mb-0"),
+                    ]),
+                    dbc.ListGroupItem([
+                        html.Strong("LlamaCloud API key"), " — sign in at ",
+                        html.A("cloud.llamaindex.ai", href="https://cloud.llamaindex.ai",
+                               target="_blank"),
+                        ", generate a key, and save it to ", html.Code("api_keys_llama.txt"), ".",
+                    ]),
+                    dbc.ListGroupItem([
+                        html.Strong("Publisher API keys"), " (Elsevier / Wiley) — save them to ",
+                        html.Code("api_keys.txt"), " one per line:",
+                        html.Pre("elsevier your-key\nwiley your-key",
+                                 className="bg-light p-2 rounded mt-1 mb-0"),
+                    ]),
+                ], flush=True),
+            ]),
+
+            # ── Step 1: install ─────────────────────────────────────────────
+            dbc.AccordionItem(title="1 · Install the environment", children=[
+                html.Pre(
+                    "conda env create -f environment.yml\nconda activate llm_extractor_enviroment",
+                    className="bg-light p-3 rounded mb-0",
+                ),
+            ]),
+
+            # ── Step 2: prepare input ───────────────────────────────────────
+            dbc.AccordionItem(title="2 · Prepare the UniProt input table", children=[
+                html.P([
+                    "Download a UniProt table for your protein family (TSV or TSV.GZ) and place it in ",
+                    html.Code("uniprot_tables/"),
+                    ". The table must include a ",
+                    html.Code("PubMed ID"),
+                    " column so the pipeline can fetch the papers.",
+                ], className="mb-0"),
+            ]),
+
+            # ── Step 3: run the pipeline ────────────────────────────────────
+            dbc.AccordionItem(title="3 · Run the full pipeline", children=[
+                html.P("From the repository root:", className="mb-2"),
+                html.Pre(code_block, className="bg-light p-3 rounded mb-3"),
+                dbc.Table([
+                    html.Thead(html.Tr([html.Th("Flag"), html.Th("Required"), html.Th("Description")])),
+                    html.Tbody([
+                        html.Tr([html.Td(html.Code("-s")), html.Td("yes"), html.Td("Path to the scripts/ directory")]),
+                        html.Tr([html.Td(html.Code("-u")), html.Td("yes"), html.Td("UniProt table (.tsv or .tsv.gz)")]),
+                        html.Tr([html.Td(html.Code("-a")), html.Td("yes"), html.Td("Publisher API keys file (api_keys.txt)")]),
+                        html.Tr([html.Td(html.Code("-l")), html.Td("yes"), html.Td("LlamaCloud API key file (api_keys_llama.txt)")]),
+                        html.Tr([html.Td(html.Code("-e")), html.Td("yes"), html.Td("Email for NCBI Entrez")]),
+                        html.Tr([html.Td(html.Code("-U")), html.Td("yes"), html.Td("User hint passed to the extraction step")]),
+                        html.Tr([html.Td(html.Code("-j")), html.Td("yes"), html.Td("Output directory for all JSON files")]),
+                        html.Tr([html.Td(html.Code("-o")), html.Td("yes"), html.Td("Output directory for PDFs and artifacts")]),
+                        html.Tr([html.Td(html.Code("-g")), html.Td("yes"), html.Td("Extraction mode: rag or norag")]),
+                        html.Tr([html.Td(html.Code("-m")), html.Td("no"), html.Td("Max papers to download (default: 15)")]),
+                        html.Tr([html.Td(html.Code("-M")), html.Td("no"), html.Td("OpenAI model name (default: gpt-4.1-mini)")]),
+                    ]),
+                ], bordered=True, size="sm", className="mb-0"),
+            ]),
+
+            # ── Step 4: pipeline stages ─────────────────────────────────────
+            dbc.AccordionItem(title="4 · What the pipeline does (stages)", children=[
+                dbc.ListGroup([
+                    dbc.ListGroupItem([html.Strong("1. Download papers"), " — fetches PDFs/XMLs from PubMed via paperscraper."]),
+                    dbc.ListGroupItem([html.Strong("2. Classify papers"), " — LlamaParse decides whether each paper reports experimental enzymology."]),
+                    dbc.ListGroupItem([html.Strong("3. Filter positives"), " — keeps only papers classified as enzymology."]),
+                    dbc.ListGroupItem([html.Strong("4. Extract Methods sections"), " — OpenAI structured output identifies the Methods text."]),
+                    dbc.ListGroupItem([
+                        html.Strong("5. Extract purification conditions"), " — structured JSON with 12 fields per protein "
+                        "(organism, strain, plasmid, inducer, buffers, etc.). ",
+                        html.Span("norag", className="badge bg-secondary me-1"),
+                        "sends the full Methods text; ",
+                        html.Span("rag", className="badge bg-primary"),
+                        " retrieves relevant chunks from a ChromaDB vector store first.",
+                    ]),
+                ], flush=True),
+            ]),
+
+            # ── Step 5: clustering ──────────────────────────────────────────
+            dbc.AccordionItem(title="5 · Run clustering (optional)", children=[
+                html.P(
+                    "After extraction, embed and cluster each field with a biomedical language model. "
+                    "Outputs are loaded by this dashboard.",
+                    className="mb-2",
+                ),
+                html.Pre(cluster_block, className="bg-light p-3 rounded mb-3"),
+                dbc.ListGroup([
+                    dbc.ListGroupItem([html.Code("-t"), " — cosine similarity threshold (lower = broader clusters)"]),
+                    dbc.ListGroupItem([html.Code("-min"), " — minimum entries to form a cluster (lower = more clusters)"]),
+                    dbc.ListGroupItem([html.Code("-m"), " — embedding model; default ",
+                                       html.Code("neuml/pubmedbert-base-embeddings"),
+                                       " is optimised for biomedical text"]),
+                ], flush=True),
+            ]),
+
+            # ── Output files ────────────────────────────────────────────────
+            dbc.AccordionItem(title="Output files", children=[
+                dbc.Table([
+                    html.Thead(html.Tr([html.Th("File"), html.Th("Description")])),
+                    html.Tbody([
+                        html.Tr([html.Td(html.Code("*_papers.json")),           html.Td("Paper metadata and download status")]),
+                        html.Tr([html.Td(html.Code("df_classification_*.json")),html.Td("LlamaCloud classification results")]),
+                        html.Tr([html.Td(html.Code("filtered_*.json")),         html.Td("Enzymology-positive papers only")]),
+                        html.Tr([html.Td(html.Code("*_method_extraction.json")),html.Td("Extracted Methods sections")]),
+                        html.Tr([html.Td(html.Code("*_purification_methods_*.json")), html.Td("Final structured purification data")]),
+                        html.Tr([html.Td(html.Code("pdfs_*/")),                 html.Td("Downloaded PDF/XML files")]),
+                        html.Tr([html.Td(html.Code("*_FIELD_CLUSTER_METRICS.csv")), html.Td("Silhouette / Davies-Bouldin scores per field")]),
+                        html.Tr([html.Td(html.Code("*_ALL_FIELDS.csv")),        html.Td("Combined clustering table across all fields")]),
+                    ]),
+                ], bordered=True, size="sm", className="mb-0"),
+            ]),
+
+        ], start_collapsed=True, className="mb-4"),
+
+    ], fluid=True, className="pt-3")
+
+
 def contact_tab():
     return dbc.Container([
         html.H3("Research Team", className="mt-3 mb-4"),
@@ -461,9 +706,10 @@ def readme_tab():
     return dbc.Container([
         html.H3("ProtoPure — Dashboard Guide", className="mt-3 mb-1"),
         html.P(
-            "ProtoPure is a LLM-enhanced tool for the systematic extraction and comparison of "
-            "protein purification conditions from scientific literature, designed to support "
-            "biochemical workflow design. Click a section below to expand it.",
+            "ProtoPure displays protein purification conditions extracted from the scientific "
+            "literature by an LLM pipeline. Use the tabs to explore the data, inspect "
+            "clustering results, compare models, and find instructions for running the "
+            "pipeline yourself. Click a section below to expand it.",
             className="text-muted mb-4",
         ),
         dbc.Accordion([
@@ -471,56 +717,56 @@ def readme_tab():
             # ── Extraction Data ───────────────────────────────────────────────
             dbc.AccordionItem(title="Extraction Data", children=[
                 html.P(
-                    "Shows all proteins extracted by the LLM pipeline, one row per protein. "
-                    "Each row combines the extracted purification conditions with paper metadata "
-                    "and linked UniProt entries.",
+                    "One row per extracted protein. Each row combines the 12 structured "
+                    "purification fields (organism, strain, plasmid, inducer, buffers, etc.) "
+                    "with paper metadata and linked UniProt entries.",
                     className="mb-3",
                 ),
                 html.H6("Filters", className="fw-bold"),
                 dbc.ListGroup([
                     dbc.ListGroupItem([
                         html.Span("Filter by group  ", className="fw-semibold"),
-                        "Select one or more protein families (azoreductases, sdrs, sams, etc.) "
-                        "to restrict the table to papers from that collection. Multiple groups "
-                        "can be selected at once.",
+                        "Restrict the table to one or more protein families "
+                        "(azoreductases, sdrs, sams, etc.). Multiple groups can be selected simultaneously.",
                     ]),
                     dbc.ListGroupItem([
-                        html.Span("Search by  ", className="fw-semibold"),
-                        "Choose which field to search: PMID, Enzyme name, Organism, Expression strain, "
-                        "Plasmid, Inducer, UniProt ID, Journal, or Paper title.",
-                    ]),
-                    dbc.ListGroupItem([
-                        html.Span("Search value  ", className="fw-semibold"),
-                        "Type any text to filter rows. The search is case-insensitive and matches "
-                        "partial strings (e.g. 'coli' matches 'Escherichia coli').",
+                        html.Span("Search by / Search value  ", className="fw-semibold"),
+                        "Choose a field (PMID, Enzyme name, Organism, Expression strain, Plasmid, "
+                        "Inducer, UniProt ID, Journal, or Paper title) and type any text. "
+                        "Matching is case-insensitive and partial (e.g. 'coli' matches 'Escherichia coli').",
                     ]),
                     dbc.ListGroupItem([
                         html.Span("✕ Clear  ", className="fw-semibold"),
-                        "Resets both the search value and the group filter, returning to the full dataset.",
+                        "Resets the search value and group filter, returning to the full dataset.",
                     ]),
                 ], flush=True, className="mb-3"),
                 html.H6("Table", className="fw-bold mt-2"),
                 dbc.ListGroup([
                     dbc.ListGroupItem([
-                        html.Span("Hover over any cell  ", className="fw-semibold"),
-                        "to see the full text if it is truncated.",
+                        html.Span("Default columns  ", className="fw-semibold"),
+                        "PMID, Enzyme name, and Organism source are shown by default. "
+                        "Use the column selector to add or hide any of the 12 extracted fields.",
+                    ]),
+                    dbc.ListGroupItem([
+                        html.Span("Hover  ", className="fw-semibold"),
+                        "over a truncated cell to see its full text.",
                     ]),
                     dbc.ListGroupItem([
                         html.Span("Click a column header  ", className="fw-semibold"),
-                        "to sort by that column.",
+                        "to sort ascending/descending.",
                     ]),
                     dbc.ListGroupItem([
                         html.Span("Click a row  ", className="fw-semibold"),
-                        "to open the detail panel below the table, showing the full extracted "
-                        "protein fields, all linked UniProt entries (with links to uniprot.org), "
-                        "and the paper metadata (title, journal, date, group badges, PubMed link, "
-                        "and full-text link where available).",
+                        "to open the detail panel below the table. The panel shows four cards: "
+                        "all extracted purification fields, linked UniProt entries (with links to uniprot.org), "
+                        "paper metadata (title, journal, date, group badges, PubMed link, full-text link), "
+                        "and a full conditions table for every protein in that paper.",
                     ]),
                 ], flush=True, className="mb-3"),
-                html.H6("⬇ Download CSV", className="fw-bold mt-2"),
+                html.H6("Download CSV", className="fw-bold mt-2"),
                 html.P(
-                    "Downloads the currently visible (filtered) table as a CSV file. "
-                    "Apply any filters first — the download reflects exactly what is shown.",
+                    "Downloads the currently visible (filtered) table as a CSV. "
+                    "Apply filters first — the download reflects exactly what is shown on screen.",
                     className="mb-0",
                 ),
             ]),
@@ -528,71 +774,74 @@ def readme_tab():
             # ── Clustering Explorer ───────────────────────────────────────────
             dbc.AccordionItem(title="Clustering Explorer", children=[
                 html.P(
-                    "Displays interactive clustering results from a grid search over embedding "
-                    "models, community-size thresholds, and similarity thresholds. Each "
-                    "combination produces per-field UMAP plots and cluster-size distributions "
-                    "rendered natively in Plotly — hover, zoom, and pan are fully interactive.",
+                    "Explore semantic clusters of extracted field values. Embeddings are computed "
+                    "with biomedical language models; community detection groups semantically similar "
+                    "entries into clusters. All plots are rendered natively in Plotly — hover, zoom, "
+                    "and pan are fully interactive.",
                     className="mb-3",
                 ),
                 html.H6("Parameter dropdowns", className="fw-bold"),
                 dbc.ListGroup([
                     dbc.ListGroupItem([
                         html.Span("Model  ", className="fw-semibold"),
-                        "The sentence-embedding model used to encode field values "
+                        "Sentence-embedding model used to encode field values "
                         "(e.g. PubMedBERT, BioBERT, SapBERT).",
                     ]),
                     dbc.ListGroupItem([
                         html.Span("Min community size  ", className="fw-semibold"),
-                        "Minimum number of entries required to form a cluster. "
-                        "Lower values produce more (smaller) clusters.",
+                        "Minimum entries required to form a cluster. Lower = more, smaller clusters.",
                     ]),
                     dbc.ListGroupItem([
                         html.Span("Threshold  ", className="fw-semibold"),
-                        "Cosine similarity threshold for grouping entries into a cluster. "
-                        "Higher values require closer matches (tighter clusters).",
+                        "Cosine similarity threshold for cluster membership. Higher = tighter clusters.",
                     ]),
                     dbc.ListGroupItem([
                         html.Span("Field  ", className="fw-semibold"),
-                        "Which extraction field to cluster: enzyme name, organism, lysis buffer, "
+                        "Which extraction field to display: enzyme name, organism, lysis buffer, "
                         "inducer, etc. Clustering is performed independently per field.",
                     ]),
                     dbc.ListGroupItem([
+                        html.Span("Filter by group  ", className="fw-semibold"),
+                        "Restrict the plot to entries from one or more protein families.",
+                    ]),
+                    dbc.ListGroupItem([
                         html.Span("Show top N clusters  ", className="fw-semibold"),
-                        "Limits the number of distinctly coloured clusters shown. "
-                        "The largest N clusters (by entry count) each get a unique colour; "
-                        "all remaining clusters are grouped into a single light-gray "
-                        "\"Other\" trace so they remain visible without adding colour noise. "
-                        "Choose \"All\" to colour every cluster individually (slow for large grids).",
+                        "The largest N clusters each get a distinct colour; all remaining clusters "
+                        "are merged into a light-gray \"Other\" trace. Choose \"All\" to colour every "
+                        "cluster individually (may be slow for large fields).",
                     ]),
                 ], flush=True, className="mb-3"),
-                html.H6("Plot type", className="fw-bold mt-2"),
+                html.H6("UMAP cluster plot", className="fw-bold mt-2"),
                 dbc.ListGroup([
+                    dbc.ListGroupItem(
+                        "2D projection of all field values coloured by cluster. "
+                        "Hover over a point to see the original text, PMID, and cluster label."
+                    ),
+                    dbc.ListGroupItem(
+                        "Noise points (not assigned to any cluster) are shown in light gray at low opacity."
+                    ),
                     dbc.ListGroupItem([
-                        html.Span("UMAP cluster plot  ", className="fw-semibold"),
-                        "2D projection of all field values coloured by cluster membership. "
-                        "Hover over any point to see the original text, PMID, and cluster label. "
-                        "Noise points (not assigned to any cluster) are shown in light gray at "
-                        "low opacity. The plot title shows the total number of clusters and noise points.",
-                    ]),
-                    dbc.ListGroupItem([
-                        html.Span("Cluster distribution  ", className="fw-semibold"),
-                        "Bar chart of the top-N clusters sorted by size (largest first). "
-                        "Useful for quickly seeing which conditions are most common across the dataset.",
+                        html.Span("Click a point  ", className="fw-semibold"),
+                        "to show a detail panel with that protein's full purification conditions.",
                     ]),
                 ], flush=True, className="mb-3"),
-                html.H6("Recommended starting parameters", className="fw-bold mt-2"),
-                html.P([
-                    "For a clear overview of enzyme name clustering, try: ",
-                    html.Span("NeuML/pubmedbert-base-embeddings", className="font-monospace small"),
-                    " · min = 10 · threshold = 0.7 · top N = 20. "
-                    "This yields ~167 clusters with well-sized groups and manageable noise.",
-                ], className="mb-3"),
+                html.H6("Cluster distribution (bar chart)", className="fw-bold mt-2"),
+                dbc.ListGroup([
+                    dbc.ListGroupItem(
+                        "Bar chart of the top-N clusters sorted by size. "
+                        "Quickly see which conditions are most common across the dataset."
+                    ),
+                    dbc.ListGroupItem([
+                        html.Span("Click a bar  ", className="fw-semibold"),
+                        "to show a table of all proteins in that cluster, with a Download CSV button.",
+                    ]),
+                ], flush=True, className="mb-3"),
                 html.H6("Metrics table", className="fw-bold mt-2"),
                 html.P(
                     "Shows Silhouette score (cosine) and Davies-Bouldin index for every field "
                     "under the selected model / min-size / threshold combination. "
-                    "Higher Silhouette (highlighted green above 0.6) indicates well-separated clusters. "
-                    "Lower Davies-Bouldin indicates more compact, better-separated clusters.",
+                    "Silhouette > 0.6 (highlighted green) indicates well-separated clusters; "
+                    "lower Davies-Bouldin indicates more compact, better-separated clusters.",
                     className="mb-0",
                 ),
             ]),
@@ -600,26 +849,81 @@ def readme_tab():
             # ── Grid Metrics ──────────────────────────────────────────────────
             dbc.AccordionItem(title="Grid Metrics", children=[
                 html.P(
-                    "Displays summary heatmap images that compare clustering quality across "
-                    "all threshold / min-community-size combinations for a given model.",
+                    "Interactive charts comparing clustering quality across all combinations of "
+                    "embedding model, similarity threshold, and min community size. "
+                    "Loaded from the pre-computed metrics CSVs at startup.",
                     className="mb-3",
                 ),
+                html.H6("Controls", className="fw-bold"),
                 dbc.ListGroup([
                     dbc.ListGroupItem([
-                        html.Span("Model  ", className="fw-semibold"),
-                        "Select the embedding model whose heatmaps you want to view.",
+                        html.Span("Field  ", className="fw-semibold"),
+                        "Which extraction field to display metrics for.",
                     ]),
                     dbc.ListGroupItem([
                         html.Span("Metric  ", className="fw-semibold"),
                         html.Ul([
-                            html.Li([html.Span("silhouette  ", className="fw-semibold"),
-                                     "— ranges from -1 to 1; higher is better."]),
-                            html.Li([html.Span("davies_bouldin  ", className="fw-semibold"),
+                            html.Li([html.Span("Silhouette Score  ", className="fw-semibold"),
+                                     "— ranges −1 to 1; higher is better."]),
+                            html.Li([html.Span("Davies-Bouldin Index  ", className="fw-semibold"),
                                      "— non-negative; lower is better."]),
-                            html.Li([html.Span("n_clusters  ", className="fw-semibold"),
-                                     "— number of clusters found at each parameter combination."]),
+                            html.Li([html.Span("Number of Clusters  ", className="fw-semibold"),
+                                     "— how many clusters were found at each parameter combination."]),
                         ], className="mb-0 mt-1"),
                     ]),
+                    dbc.ListGroupItem([
+                        html.Span("Model  ", className="fw-semibold"),
+                        "Filter the model-comparison bar chart to a single embedding model, "
+                        "or select \"All\" to compare all models side by side.",
+                    ]),
+                ], flush=True, className="mb-3"),
+                html.H6("Charts", className="fw-bold mt-2"),
+                dbc.ListGroup([
+                    dbc.ListGroupItem([
+                        html.Span("Heatmap  ", className="fw-semibold"),
+                        "Threshold (x) vs min community size (y) coloured by the selected metric. "
+                        "Hover to see exact values.",
+                    ]),
+                    dbc.ListGroupItem([
+                        html.Span("Model comparison bar chart  ", className="fw-semibold"),
+                        "Average metric value per model across all parameter combinations.",
+                    ]),
+                    dbc.ListGroupItem([
+                        html.Span("Top-10 configurations table  ", className="fw-semibold"),
+                        "The ten parameter combinations with the best metric score for the selected field.",
+                    ]),
+                ], flush=True),
+            ]),
+
+            # ── Extraction Pipeline Instructions ──────────────────────────────
+            dbc.AccordionItem(title="Extraction Pipeline Instructions", children=[
+                html.P([
+                    "Step-by-step guide for running the LLM extraction pipeline locally "
+                    "to produce your own dataset. Full details are in the ",
+                    html.A("Extraction Pipeline Instructions",
+                           href="#", id="readme-pipeline-link"),
+                    " tab. Source code: ",
+                    html.A("github.com/jinichlab/llm_extractor",
+                           href="https://github.com/jinichlab/llm_extractor",
+                           target="_blank"),
+                    ".",
+                ], className="mb-3"),
+                dbc.ListGroup([
+                    dbc.ListGroupItem([html.Span("0 · Prerequisites  ", className="fw-semibold"),
+                                       "conda, OpenAI key, LlamaCloud key, publisher API keys."]),
+                    dbc.ListGroupItem([html.Span("1 · Install  ", className="fw-semibold"),
+                                       html.Code("conda env create -f environment.yml"),
+                                       " + ", html.Code("conda activate llm_extractor_enviroment"), "."]),
+                    dbc.ListGroupItem([html.Span("2 · Input  ", className="fw-semibold"),
+                                       "UniProt TSV with a PubMed ID column in ",
+                                       html.Code("uniprot_tables/"), "."]),
+                    dbc.ListGroupItem([html.Span("3 · Run  ", className="fw-semibold"),
+                                       html.Code("scripts/run_pipeline_extraction.sh"),
+                                       " — downloads papers, classifies them, extracts Methods, "
+                                       "and outputs structured purification JSON."]),
+                    dbc.ListGroupItem([html.Span("4 · Cluster (optional)  ", className="fw-semibold"),
+                                       html.Code("scripts/create_clustering_plots.py"),
+                                       " — embeds and clusters each field; outputs loaded by this dashboard."]),
                 ], flush=True),
             ]),
 
@@ -650,6 +954,7 @@ app.layout = dbc.Container([
         dbc.Tab(label="Extraction Data",    tab_id="tab-proteins"),
         dbc.Tab(label="Clustering Explorer",tab_id="tab-clustering"),
         dbc.Tab(label="Grid Metrics",       tab_id="tab-grid-metrics"),
+        dbc.Tab(label="Extraction Pipeline Instructions", tab_id="tab-pipeline"),
         dbc.Tab(label="README",             tab_id="tab-readme"),
         dbc.Tab(label="Contact",            tab_id="tab-contact"),
     ], id="main-tabs", active_tab="tab-proteins"),
@@ -672,12 +977,27 @@ def render_tab(tab):
         return clustering_tab()
     elif tab == "tab-grid-metrics":
         return grid_metrics_tab()
+    elif tab == "tab-pipeline":
+        return pipeline_tab()
     return html.Div()
+
+
+def _apply_filters(groups, search_field, search_value):
+    filtered = df.copy()
+    if groups:
+        filtered = filtered[filtered["groups"].apply(
+            lambda g: any(sel in g.split(", ") for sel in groups)
+        )]
+    if search_value and search_field and search_field in filtered.columns:
+        filtered = filtered[
+            filtered[search_field].astype(str).str.contains(search_value, case=False, na=False)
+        ]
+    return filtered
 
 
 @app.callback(
     Output("protein-table", "data"),
-    Output("protein-table", "columns"),
+    Output("protein-table", "hidden_columns"),
     Output("protein-table", "tooltip_data"),
     Output("protein-count", "children"),
     Input("filter-group", "value"),
@@ -686,42 +1006,35 @@ def render_tab(tab):
     Input("col-selector", "value"),
 )
 def filter_proteins(groups, search_field, search_value, selected_cols):
-    filtered = df.copy()
-    if groups:
-        mask = filtered["groups"].apply(
-            lambda g: any(sel in g.split(", ") for sel in groups)
-        )
-        filtered = filtered[mask]
-    if search_value and search_field and search_field in filtered.columns:
-        filtered = filtered[
-            filtered[search_field].astype(str).str.contains(search_value, case=False, na=False)
-        ]
-
+    filtered = _apply_filters(groups, search_field, search_value)
     cols = selected_cols if selected_cols else DEFAULT_COLS
-    # Always include pmid in data even if hidden, so row-click detail still works
-    data_cols = list(dict.fromkeys(["pmid"] + cols))
-    col_defs = [{"name": FIELD_LABELS.get(c, c), "id": c} for c in cols]
-
-    records = filtered[data_cols].to_dict("records")
+    hidden = [c for c in TABLE_FIELDS if c not in cols]
+    records = filtered[TABLE_FIELDS].to_dict("records")
     tooltips = [
         {c: {"value": str(row.get(c, "")), "type": "markdown"} for c in cols}
         for row in records
     ]
     label = f"Showing {len(filtered):,} of {len(df):,} proteins"
-    return records, col_defs, tooltips, label
+    return records, hidden, tooltips, label
 
 
 @app.callback(
     Output("detail-panel", "children"),
     Input("protein-table", "selected_rows"),
-    State("protein-table", "data"),
+    Input("filter-group", "value"),
+    Input("search-field", "value"),
+    Input("search-value", "value"),
+    prevent_initial_call=True,
 )
-def show_detail(selected_rows, table_data):
-    if not selected_rows or not table_data:
+def show_detail(selected_rows, groups, search_field, search_value):
+    if not selected_rows:
         return html.Div()
-
-    row = table_data[selected_rows[0]]
-    pmid = row.get("pmid", "")
+    filtered = _apply_filters(groups, search_field, search_value)
+    clicked = selected_rows[0]
+    if clicked >= len(filtered):
+        return dash.no_update
+    row = filtered.iloc[clicked].to_dict()
+    pmid = str(row.get("pmid", ""))
     entry = RAW.get(pmid, {})
 
     uniprot_ids   = entry.get("Uniprot_IDS", []) or []
@@ -836,10 +1149,11 @@ def show_detail(selected_rows, table_data):
         {c: (p.get(c) or "") for c in CONDITION_COLS}
         for p in all_proteins
     ]
-    # Mark the selected protein
+    # Mark the selected protein by matching enzyme_name + organism_source
     sel_idx = next(
         (i for i, p in enumerate(all_proteins)
-         if all(str(p.get(c, "") or "") == str(row.get(c, "") or "") for c in CONDITION_COLS[:3])),
+         if str(p.get("enzyme_name", "") or "") == str(row.get("enzyme_name", "") or "")
+         and str(p.get("organism_source", "") or "") == str(row.get("organism_source", "") or "")),
         None,
     )
     cond_col_defs = [
@@ -1049,7 +1363,8 @@ def _distribution_figure(cdf, field_name, top_n=20):
         marker_line_color="rgba(255,255,255,0.6)",
         marker_line_width=0.8,
         opacity=0.88,
-        hovertemplate="<b>%{x}</b><br>Count: %{y:,}<extra></extra>",
+        customdata=counts["cluster_id"].tolist(),
+        hovertemplate="<b>%{x}</b><br>Count: %{y:,}<br><i>Click to see proteins</i><extra></extra>",
     ))
     fig.update_layout(
         title=dict(
@@ -1083,8 +1398,9 @@ def _distribution_figure(cdf, field_name, top_n=20):
     Input("dd-field", "value"),
     Input("plot-type", "value"),
     Input("top-n-clusters", "value"),
+    Input("cluster-group-filter", "value"),
 )
-def update_cluster_plot(model, min_val, threshold, field, plot_type, top_n):
+def update_cluster_plot(model, min_val, threshold, field, plot_type, top_n, groups):
     empty_fig = go.Figure()
     empty_fig.update_layout(paper_bgcolor="#ffffff", plot_bgcolor="#f9fafc")
     if not all([model, min_val, threshold, field, plot_type]):
@@ -1094,15 +1410,27 @@ def update_cluster_plot(model, min_val, threshold, field, plot_type, top_n):
     if cdf is None:
         return empty_fig, f"Data file not found for model={model} min={min_val} t={threshold}"
 
-    field_df = cdf[cdf["field"] == field]
+    field_df = cdf[cdf["field"] == field].copy()
     if field_df.empty:
         return empty_fig, f"No data for field '{field}' in this parameter combination."
 
+    # Filter by group if selected
+    if groups:
+        sel = set(groups)
+        field_df = field_df[
+            field_df["key"].astype(str).apply(
+                lambda pmid: bool(PMID_GROUPS.get(pmid, set()) & sel)
+            )
+        ]
+        if field_df.empty:
+            return empty_fig, f"No data for the selected group(s) in this field."
+
     n = top_n or 0
+    suffix = f" — {', '.join(groups)}" if groups else ""
     if plot_type == "cluster":
-        return _umap_figure(field_df, field, top_n=n), ""
+        return _umap_figure(field_df, field + suffix, top_n=n), ""
     else:
-        return _distribution_figure(field_df, field, top_n=n), ""
+        return _distribution_figure(field_df, field + suffix, top_n=n), ""
 
 
 _CONDITION_COLS = [
@@ -1114,14 +1442,117 @@ _CONDITION_COLS = [
 
 @app.callback(
     Output("cluster-point-detail", "children"),
+    Output("cluster-table-store", "data"),
     Input("cluster-graph", "clickData"),
     State("dd-field", "value"),
+    State("dd-model", "value"),
+    State("dd-min", "value"),
+    State("dd-threshold", "value"),
+    State("plot-type", "value"),
 )
-def show_cluster_point_detail(click_data, field):
+def show_cluster_point_detail(click_data, field, model, min_val, threshold, plot_type):
     if not click_data:
-        return html.Div()
+        return html.Div(), None
 
     point = click_data["points"][0]
+
+    # ── Bar chart click: show all proteins in that cluster ──────────────────
+    if plot_type == "distribution":
+        cluster_id = point.get("customdata")
+        cluster_label = str(point.get("x", ""))
+        count = point.get("y", 0)
+
+        cdf = _load_cluster_csv(model, min_val, threshold)
+        if cdf is None:
+            return html.Div("Could not load cluster data.", className="text-muted small mt-2"), None
+
+        members = cdf[(cdf["field"] == field) & (cdf["cluster_id"] == cluster_id)]
+
+        rows = []
+        for _, r in members.iterrows():
+            pmid = str(r["key"])
+            pidx = int(r["protein_index"])
+            entry = RAW.get(pmid, {})
+            proteins = entry.get("proteins", []) or []
+            protein = proteins[pidx] if pidx < len(proteins) else {}
+            m = META.get(pmid, {})
+            row = {"pmid": pmid}
+            row.update({c: str(protein.get(c) or "") for c in _CONDITION_COLS})
+            row["field_value"] = str(r.get("value", ""))
+            row["journal"] = m.get("source", "")
+            row["pub_date"] = m.get("pub_date", "")
+            rows.append(row)
+
+        # Column order: pmid, enzyme_name, organism_source, [clustered field], rest, journal, pub_date
+        fixed = ["pmid", "enzyme_name", "organism_source"]
+        field_col = "field_value"
+        remaining = [c for c in _CONDITION_COLS if c not in fixed and c != field]
+        table_cols = fixed + [field_col] + remaining + ["journal", "pub_date"]
+        field_label = field.replace("_", " ").title()
+        col_defs = [
+            {"name": (field_label if c == field_col else c.replace("_", " ").title()), "id": c}
+            for c in table_cols
+        ]
+
+        return html.Div([
+            dbc.Card([
+                dbc.CardHeader(
+                    dbc.Row([
+                        dbc.Col([
+                            html.Span("Proteins in cluster — ", className="fw-bold"),
+                            html.Span(f'"{cluster_label}"', className="fst-italic"),
+                            dbc.Badge(f"{count} proteins", color="primary", className="ms-2"),
+                        ], width=10),
+                        dbc.Col(
+                            dbc.Button("⬇ Download CSV", id="download-cluster-btn",
+                                       size="sm", color="success", outline=True),
+                            width=2, className="text-end",
+                        ),
+                    ], align="center"),
+                ),
+                dbc.CardBody(
+                    dash_table.DataTable(
+                        columns=col_defs,
+                        data=rows,
+                        page_size=15,
+                        sort_action="native",
+                        style_table={"overflowX": "auto"},
+                        style_cell={
+                            "fontSize": "12px",
+                            "padding": "5px 10px",
+                            "textAlign": "left",
+                            "maxWidth": "260px",
+                            "overflow": "hidden",
+                            "textOverflow": "ellipsis",
+                            "whiteSpace": "nowrap",
+                        },
+                        style_cell_conditional=[
+                            {"if": {"column_id": field_col},
+                             "backgroundColor": "#fff8e1", "fontWeight": "500"},
+                        ],
+                        style_header={
+                            "fontWeight": "700",
+                            "backgroundColor": "#1a3a5c",
+                            "color": "#ffffff",
+                            "fontSize": "11px",
+                            "textTransform": "uppercase",
+                            "letterSpacing": "0.04em",
+                        },
+                        style_data_conditional=[
+                            {"if": {"row_index": "odd"}, "backgroundColor": "#eef4fd"},
+                        ],
+                        tooltip_data=[
+                            {c: {"value": str(r.get(c, "")), "type": "markdown"} for c in table_cols}
+                            for r in rows
+                        ],
+                        tooltip_delay=0,
+                        tooltip_duration=None,
+                    ) if rows else html.Span("No proteins found.", className="text-muted small")
+                ),
+            ], className="mb-3"),
+        ]), rows
+
+    # ── UMAP scatter click: show single protein conditions ──────────────────
     pmid = str(point.get("text", ""))
     customdata = point.get("customdata", [])
 
@@ -1194,7 +1625,19 @@ def show_cluster_point_detail(click_data, field):
                 ) if cond_rows else html.Span("No conditions recorded for this protein.", className="text-muted small")
             ),
         ], className="mb-3"),
-    ])
+    ]), None
+
+
+@app.callback(
+    Output("download-cluster-csv", "data"),
+    Input("download-cluster-btn", "n_clicks"),
+    State("cluster-table-store", "data"),
+    prevent_initial_call=True,
+)
+def download_cluster_table(n_clicks, rows):
+    if not n_clicks or not rows:
+        return None
+    return dcc.send_data_frame(pd.DataFrame(rows).to_csv, "cluster_proteins.csv", index=False)
 
 
 @app.callback(
@@ -1236,24 +1679,108 @@ def update_metrics_table(model, min_val, threshold):
 
 
 @app.callback(
-    Output("metrics-image-container", "children"),
-    Input("dd-metrics-model", "value"),
+    Output("metrics-heatmap", "figure"),
+    Output("metrics-model-compare", "figure"),
+    Output("metrics-best-table", "children"),
+    Input("dd-metrics-field", "value"),
     Input("dd-metrics-type", "value"),
+    Input("dd-metrics-model", "value"),
 )
-def update_metrics_image(model_short, metric_type):
-    if not model_short or not metric_type:
-        return html.Div()
+def update_grid_metrics(field, metric, model):
+    empty = go.Figure()
+    empty.update_layout(paper_bgcolor="#ffffff", plot_bgcolor="#f9fafc")
+    if METRICS_DF.empty or not field or not metric or not model:
+        return empty, empty, html.Div()
 
-    filename  = f"{metric_type}_heatmap__{model_short}.png"
-    full_path = os.path.join(GRID_BASE, "metrics", filename)
+    metric_label = _METRIC_LABELS.get(metric, metric)
+    higher_better = metric == "silhouette_cosine"
 
-    if not os.path.isfile(full_path):
-        return html.Div(f"Image not found: {filename}", className="text-muted small")
+    # ── Heatmap: threshold × min_size for selected model + field ─────────────
+    sub = METRICS_DF[(METRICS_DF["model"] == model) & (METRICS_DF["field"] == field)]
+    if not sub.empty:
+        pivot = sub.pivot_table(index="min_community_size", columns="threshold",
+                                values=metric, aggfunc="mean")
+        pivot = pivot.sort_index(ascending=False)
 
-    return html.Img(
-        src=f"/grid_files/metrics/{filename}",
-        style={"maxWidth": "100%", "border": "1px solid #dee2e6", "borderRadius": "4px", "padding": "8px"},
+        colorscale = "RdYlGn" if higher_better else "RdYlGn_r"
+        heatmap_fig = go.Figure(go.Heatmap(
+            z=pivot.values,
+            x=[str(c) for c in pivot.columns],
+            y=[str(r) for r in pivot.index],
+            colorscale=colorscale,
+            text=[[f"{v:.3f}" for v in row] for row in pivot.values],
+            texttemplate="%{text}",
+            hovertemplate="Threshold: %{x}<br>Min size: %{y}<br>" + metric_label + ": %{z:.3f}<extra></extra>",
+            colorbar=dict(title=metric_label, thickness=14),
+        ))
+        heatmap_fig.update_layout(
+            title=dict(text=f"{metric_label} — <b>{field.replace('_',' ').title()}</b><br>"
+                            f"<sup>{model}</sup>", font=dict(size=13)),
+            xaxis=dict(title="Threshold", type="category"),
+            yaxis=dict(title="Min community size", type="category"),
+            paper_bgcolor="#ffffff", plot_bgcolor="#f9fafc",
+            margin=dict(l=60, r=20, t=70, b=50),
+        )
+    else:
+        heatmap_fig = empty
+
+    # ── Bar chart: compare all models for selected field at best threshold ────
+    field_df = METRICS_DF[METRICS_DF["field"] == field]
+    if not field_df.empty:
+        best = (field_df.groupby("model")[metric]
+                .apply(lambda x: x.max() if higher_better else x.min())
+                .reset_index()
+                .sort_values(metric, ascending=not higher_better))
+        colors = [_PALETTE[i % len(_PALETTE)] for i in range(len(best))]
+        compare_fig = go.Figure(go.Bar(
+            x=best["model"],
+            y=best[metric],
+            marker_color=colors,
+            marker_line_color="rgba(255,255,255,0.6)",
+            marker_line_width=0.8,
+            opacity=0.88,
+            hovertemplate="<b>%{x}</b><br>" + metric_label + ": %{y:.3f}<extra></extra>",
+        ))
+        compare_fig.update_layout(
+            title=dict(text=f"Best {metric_label} per model — <b>{field.replace('_',' ').title()}</b>",
+                       font=dict(size=13)),
+            xaxis=dict(tickangle=-35, tickfont=dict(size=10)),
+            yaxis=dict(title=metric_label, gridcolor="#e5e7eb"),
+            paper_bgcolor="#ffffff", plot_bgcolor="#f9fafc",
+            margin=dict(l=60, r=20, t=60, b=120),
+            showlegend=False,
+        )
+    else:
+        compare_fig = empty
+
+    # ── Best combinations table ───────────────────────────────────────────────
+    top = (METRICS_DF[METRICS_DF["field"] == field]
+           .sort_values(metric, ascending=not higher_better)
+           .head(10)[["model", "threshold", "min_community_size", "n_clusters",
+                       "silhouette_cosine", "davies_bouldin"]]
+           .round(4))
+    best_table = dash_table.DataTable(
+        columns=[{"name": c.replace("_", " ").title(), "id": c} for c in top.columns],
+        data=top.to_dict("records"),
+        sort_action="native",
+        style_table={"overflowX": "auto"},
+        style_cell={"fontSize": "12px", "padding": "5px 10px", "textAlign": "left"},
+        style_header={
+            "fontWeight": "700", "backgroundColor": "#1a3a5c",
+            "color": "#ffffff", "fontSize": "11px",
+            "textTransform": "uppercase", "letterSpacing": "0.04em",
+        },
+        style_data_conditional=[
+            {"if": {"row_index": "odd"}, "backgroundColor": "#eef4fd"},
+            {"if": {"row_index": 0}, "backgroundColor": "#d4edda", "fontWeight": "bold"},
+            {"if": {"filter_query": "{silhouette_cosine} > 0.6", "column_id": "silhouette_cosine"},
+             "color": "#198754", "fontWeight": "bold"},
+            {"if": {"filter_query": "{silhouette_cosine} < 0.3", "column_id": "silhouette_cosine"},
+             "color": "#dc3545"},
+        ],
     )
+
+    return heatmap_fig, compare_fig, best_table
 
 
 # ---------------------------------------------------------------------------
