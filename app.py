@@ -5,6 +5,7 @@ import glob
 
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import dash
 from dash import dcc, html, dash_table, Input, Output, State
 import dash_bootstrap_components as dbc
@@ -130,6 +131,245 @@ def load_all_metrics():
 METRICS_DF = load_all_metrics()
 METRIC_FIELDS = sorted(METRICS_DF["field"].unique()) if not METRICS_DF.empty else []
 METRIC_MODELS = sorted(METRICS_DF["model"].unique()) if not METRICS_DF.empty else []
+
+# ---------------------------------------------------------------------------
+# Evaluation data
+# ---------------------------------------------------------------------------
+_EVAL_BASE = "/data/ralmadamonter/llm_project/jsons/evaluation_llm_results"
+
+_PURIF_FIELDS = [
+    "enzyme_name", "organism_source", "strain", "expression_strain", "plasmid",
+    "molecular_weight", "medium_name", "inducer", "induction_temperature",
+    "lysis_buffer", "elution_buffer", "desalting_process",
+]
+
+_NLP_METRICS = {
+    "bertscore_f1":     "BERTScore F1",
+    "rouge1_f":         "ROUGE-1 F",
+    "bleu":             "BLEU",
+    "meteor":           "METEOR",
+    "cosine_similarity":"Cosine Similarity",
+}
+
+# BLEU and METEOR are stored 0–100; divide by 100 to normalise to 0–1 for display
+_NLP_SCALE = {"bleu": 100.0, "meteor": 100.0}
+
+_LLM_EVAL_CONFIGS = [
+    ("azoreductases","gpt-4.1",  False, os.path.join(_EVAL_BASE,"cleaned","results_azo_gpt-4.1_cleaned.json")),
+    ("azoreductases","gpt-5-mini",False,os.path.join(_EVAL_BASE,"cleaned","results_azo_gpt-5-mini_cleaned.json")),
+    ("azoreductases","gpt-5",    False, os.path.join(_EVAL_BASE,"cleaned","results_azo_gpt-5_cleaned.json")),
+    ("azoreductases","gpt-4.1",  True,  os.path.join(_EVAL_BASE,"cleaned","results_azo_gpt-4.1_rag_600_100_cleaned.json")),
+    ("azoreductases","gpt-5-mini",True, os.path.join(_EVAL_BASE,"cleaned","results_azo_gpt-5-mini_rag_600_100_cleaned.json")),
+    ("azoreductases","gpt-5",    True,  os.path.join(_EVAL_BASE,"cleaned","results_azo_gpt-5_rag_600_100_cleaned.json")),
+    ("sams","gpt-4.1",   False, os.path.join(_EVAL_BASE,"sams","cleaned","sams_gpt-4.1_cleaned.json")),
+    ("sams","gpt-5-mini",False, os.path.join(_EVAL_BASE,"sams","cleaned","sams_gpt-5-mini_cleaned.json")),
+    ("sams","gpt-5",     False, os.path.join(_EVAL_BASE,"sams","cleaned","sams_gpt-5_cleaned.json")),
+    ("sams","gpt-4.1",   True,  os.path.join(_EVAL_BASE,"sams","cleaned","sams_gpt-4.1_rag_600_100_cleaned.json")),
+    ("sams","gpt-5-mini",True,  os.path.join(_EVAL_BASE,"sams","cleaned","sams_gpt-5-mini_rag_600_100_cleaned.json")),
+    ("sams","gpt-5",     True,  os.path.join(_EVAL_BASE,"sams","cleaned","sams_gpt-5_rag_600_100_cleaned.json")),
+]
+
+_NLP_EVAL_CONFIGS = [
+    ("azoreductases","gpt-4.1",  False, os.path.join(_EVAL_BASE,"results_azo_purification_nlp_gpt-4.1_cleaned.json")),
+    ("azoreductases","gpt-5-mini",False,os.path.join(_EVAL_BASE,"results_azo_purification_nlp_gpt-5-mini_cleaned.json")),
+    ("azoreductases","gpt-5",    False, os.path.join(_EVAL_BASE,"results_azo_purification_nlp_gpt-5_cleaned.json")),
+    ("azoreductases","gpt-4.1",  True,  os.path.join(_EVAL_BASE,"results_azo_purification_nlp_gpt-4.1_rag_600_100_cleaned.json")),
+    ("azoreductases","gpt-5-mini",True, os.path.join(_EVAL_BASE,"results_azo_purification_nlp_gpt-5-mini_rag_600_100_cleaned.json")),
+    ("azoreductases","gpt-5",    True,  os.path.join(_EVAL_BASE,"results_azo_purification_nlp_gpt-5_rag_600_100_cleaned.json")),
+    ("sams","gpt-4.1",  False, os.path.join(_EVAL_BASE,"sams","results_nlp_sams_purification_gpt-4.1_cleaned.json")),
+    ("sams","gpt-5-mini",False, os.path.join(_EVAL_BASE,"sams","results_nlp_sams_purification_gpt-5-mini_cleaned.json")),
+    ("sams","gpt-5",    False, os.path.join(_EVAL_BASE,"sams","results_nlp_sams_purification_gpt-5_cleaned.json")),
+    ("sams","gpt-4.1",  True,  os.path.join(_EVAL_BASE,"sams","results_nlp_sams_purification_gpt-4.1_rag_600_100_cleaned.json")),
+    ("sams","gpt-5-mini",True, os.path.join(_EVAL_BASE,"sams","results_nlp_sams_purification_gpt-5-mini_rag_600_100_cleaned.json")),
+    ("sams","gpt-5",    True,  os.path.join(_EVAL_BASE,"sams","results_nlp_sams_purification_gpt-5_rag_600_100_cleaned.json")),
+]
+
+_EVAL_LABELS = [
+    "gpt-4.1 (no-RAG)", "gpt-4.1 (RAG)",
+    "gpt-5-mini (no-RAG)", "gpt-5-mini (RAG)",
+    "gpt-5 (no-RAG)", "gpt-5 (RAG)",
+]
+
+
+def _flatten_purif_eval(configs, score_key):
+    rows = []
+    for group, model, rag, fpath in configs:
+        if not os.path.exists(fpath):
+            continue
+        try:
+            with open(fpath) as f:
+                data = json.load(f)
+        except Exception:
+            continue
+        label = f"{model} ({'RAG' if rag else 'no-RAG'})"
+        for pmid, entry in data.items():
+            for pair in entry.get("evaluated_protein_pairs", []):
+                gt_prot  = pair.get("gt_protein",  {})
+                llm_prot = pair.get("llm_protein", {})
+                for field, scores in pair.get("evaluation_result", {}).items():
+                    if field not in _PURIF_FIELDS or not isinstance(scores, dict):
+                        continue
+                    val = scores.get(score_key)
+                    if val is None:
+                        continue
+                    rows.append({
+                        "group": group, "model": model, "rag": rag,
+                        "label": label, "pmid": pmid, "field": field,
+                        score_key: float(val),
+                        "gt_text":     str(gt_prot.get(field)  or ""),
+                        "llm_text":    str(llm_prot.get(field) or ""),
+                        "explanation": str(scores.get("explanation", "")),
+                    })
+    return pd.DataFrame(rows) if rows else pd.DataFrame(
+        columns=["group","model","rag","label","pmid","field",score_key,
+                 "gt_text","llm_text","explanation"])
+
+
+def load_eval_data():
+    llm_df = _flatten_purif_eval(_LLM_EVAL_CONFIGS, "similarity_score")
+
+    nlp_rows = []
+    for group, model, rag, fpath in _NLP_EVAL_CONFIGS:
+        if not os.path.exists(fpath):
+            continue
+        try:
+            with open(fpath) as f:
+                data = json.load(f)
+        except Exception:
+            continue
+        label = f"{model} ({'RAG' if rag else 'no-RAG'})"
+        for pmid, entry in data.items():
+            for pair in entry.get("evaluated_protein_pairs", []):
+                for field, scores in pair.get("evaluation_result", {}).items():
+                    if field not in _PURIF_FIELDS or not isinstance(scores, dict):
+                        continue
+                    gt_text  = str(scores.get("GT",  "") or "")
+                    llm_text = str(scores.get("LLM", "") or "")
+                    for metric in _NLP_METRICS:
+                        val = scores.get(metric)
+                        if val is None:
+                            continue
+                        nlp_rows.append({"group": group, "model": model, "rag": rag,
+                                         "label": label, "pmid": pmid, "field": field,
+                                         "metric": metric, "value": float(val),
+                                         "gt_text": gt_text, "llm_text": llm_text})
+    nlp_df = pd.DataFrame(nlp_rows) if nlp_rows else pd.DataFrame(
+        columns=["group","model","rag","label","pmid","field","metric","value"])
+
+    _classif_sources = [
+        ("azoreductases", os.path.join(os.path.dirname(_EVAL_BASE),
+                                       "results_method_extraction",
+                                       "results_azo_method_extraction_metrics.json")),
+        ("sams",          "/data/ralmadamonter/llm_project/jsons/sams/extracted_methods_sams_metrics.json"),
+    ]
+    classif_rows = []
+    for group, fpath in _classif_sources:
+        if not os.path.exists(fpath):
+            continue
+        try:
+            with open(fpath) as f:
+                data = json.load(f)
+            for pmid, scores in data.items():
+                if not isinstance(scores, dict):
+                    continue
+                gt_text  = str(scores.get("GT",  "") or "")
+                llm_text = str(scores.get("LLM", "") or "")
+                for metric in _NLP_METRICS:
+                    val = scores.get(metric)
+                    if val is not None:
+                        classif_rows.append({
+                            "group": group, "pmid": pmid,
+                            "metric": metric, "value": float(val),
+                            "gt_text": gt_text, "llm_text": llm_text,
+                        })
+        except Exception:
+            pass
+    classif_df = pd.DataFrame(classif_rows) if classif_rows else pd.DataFrame(
+        columns=["group","pmid","metric","value","gt_text","llm_text"])
+
+    return llm_df, nlp_df, classif_df
+
+
+EVAL_LLM_DF, EVAL_NLP_DF, CLASSIF_DF = load_eval_data()
+
+# ---------------------------------------------------------------------------
+# Classification confusion matrices
+# ---------------------------------------------------------------------------
+_CONFMAT_AZO_PATH   = "/data/ralmadamonter/llm_project/jsons/azoreductases_gt/azo_metadata.json"
+_CONFMAT_SAMS_PATH  = "/data/ralmadamonter/llm_project/plots/classification_confusion_matrix/confusion_matrix_counts.csv"
+_SAMS_ALL_PATH      = "/data/ralmadamonter/llm_project/jsons/sams/sam_pdfs_enzymology.json"
+_SAMS_FILTERED_PATH = "/data/ralmadamonter/llm_project/jsons/sams/filtered.json"
+
+
+def _compute_metrics(tp, fp, fn, tn):
+    precision = tp / (tp + fp) if (tp + fp) > 0 else None
+    recall    = tp / (tp + fn) if (tp + fn) > 0 else None
+    f1        = (2 * precision * recall / (precision + recall)
+                 if precision is not None and recall is not None
+                    and (precision + recall) > 0 else None)
+    accuracy  = (tp + tn) / (tp + fp + fn + tn) if (tp + fp + fn + tn) > 0 else None
+    return {"TP": tp, "FP": fp, "FN": fn, "TN": tn,
+            "Precision": precision, "Recall": recall, "F1": f1, "Accuracy": accuracy}
+
+
+def load_confusion_matrices():
+    result = {}
+    # Azoreductases: all 31 GT papers classified as enzymology
+    try:
+        with open(_CONFMAT_AZO_PATH) as f:
+            azo_meta = json.load(f)
+        n = len(azo_meta)
+        result["azoreductases"] = _compute_metrics(tp=n, fp=0, fn=0, tn=0)
+        result["azoreductases"]["note"] = (
+            f"All {n} ground-truth papers were classified as enzymology. "
+            "No negative set available, so TN and FP are not applicable."
+        )
+        # All are TP
+        result["azoreductases"]["papers"] = {
+            pmid: {"actual": True, "predicted": True,
+                   "title":    v.get("title", ""),
+                   "pub_date": v.get("pub_date", ""),
+                   "source":   v.get("source", "")}
+            for pmid, v in azo_meta.items()
+        }
+    except Exception:
+        pass
+    # SAMs: full confusion matrix from CSV (rows=Actual, cols=Predicted)
+    try:
+        cm = pd.read_csv(_CONFMAT_SAMS_PATH, index_col=0)
+        cm.index   = cm.index.map(lambda v: bool(v) if not isinstance(v, bool) else v)
+        cm.columns = cm.columns.map(lambda v: bool(v) if v == "True" else (False if v == "False" else v))
+        tp = int(cm.loc[True,  True])
+        fn = int(cm.loc[True,  False])
+        fp = int(cm.loc[False, True])
+        tn = int(cm.loc[False, False])
+        result["sams"] = _compute_metrics(tp=tp, fp=fp, fn=fn, tn=tn)
+        result["sams"]["matrix"] = cm
+        # Per-paper category assignments
+        with open(_SAMS_ALL_PATH) as f:
+            all_papers = json.load(f)
+        with open(_SAMS_FILTERED_PATH) as f:
+            filtered = json.load(f)
+        pred_pos = set(filtered.keys())
+        papers = {}
+        for pmid, v in all_papers.items():
+            actual    = bool(v.get("Count_Enzymology", False))
+            predicted = pmid in pred_pos
+            papers[pmid] = {
+                "actual":    actual,
+                "predicted": predicted,
+                "title":     v.get("title", ""),
+                "pub_date":  v.get("pub_date", ""),
+                "source":    v.get("source", ""),
+                "url":       v.get("url", ""),
+            }
+        result["sams"]["papers"] = papers
+    except Exception as e:
+        print("SAMs confmat load error:", e)
+    return result
+
+
+CONF_MATRICES = load_confusion_matrices()
 
 # ---------------------------------------------------------------------------
 # Dash app
@@ -695,6 +935,151 @@ def pipeline_tab():
     ], fluid=True, className="pt-3")
 
 
+def evaluation_tab():
+    label_options = [{"label": lbl, "value": lbl} for lbl in _EVAL_LABELS]
+
+    return dbc.Container([
+        html.H3("Evaluation Results", className="mt-3 mb-1"),
+        html.P(
+            "Pipeline evaluation across protein groups and GPT models: "
+            "methods extraction quality (NLP metrics) and purification conditions accuracy "
+            "(LLM-based scoring and NLP metrics).",
+            className="text-muted mb-4",
+        ),
+
+        dbc.Accordion([
+
+            # ── Section 1: Purification conditions ──────────────────────────
+            dbc.AccordionItem(
+                title="1 · Purification Conditions Evaluation",
+                children=[
+                    # Controls row
+                    dbc.Row([
+                        dbc.Col([
+                            html.Label("Protein group", className="fw-semibold small mb-1"),
+                            dcc.RadioItems(
+                                id="eval-group",
+                                options=[
+                                    {"label": " Azoreductases", "value": "azoreductases"},
+                                    {"label": " SAMs",          "value": "sams"},
+                                ],
+                                value="azoreductases",
+                                inline=True,
+                                inputStyle={"marginRight": "4px"},
+                                labelStyle={"marginRight": "16px"},
+                            ),
+                        ], width=12, md=3),
+                        dbc.Col([
+                            html.Label("Models / configurations", className="fw-semibold small mb-1"),
+                            dcc.Checklist(
+                                id="eval-model-checklist",
+                                options=label_options,
+                                value=_EVAL_LABELS,
+                                inline=True,
+                                inputStyle={"marginRight": "4px"},
+                                labelStyle={"marginRight": "14px", "fontSize": "0.85rem"},
+                            ),
+                        ], width=12, md=9),
+                    ], className="mb-4 align-items-start"),
+
+                    # Sub-tabs
+                    dbc.Tabs([
+                        dbc.Tab(label="LLM-based Evaluation", tab_id="eval-tab-llm", children=[
+                            html.P(
+                                "Mean LLM similarity score (0–10) per extraction field. "
+                                "Higher = more similar to the ground truth. "
+                                "Click a bar to see examples.",
+                                className="text-muted small mt-2 mb-1",
+                            ),
+                            dcc.Graph(id="eval-llm-graph",
+                                      config={"displayModeBar": False},
+                                      style={"height": "460px"}),
+                            html.Div(id="eval-llm-examples", className="mt-3"),
+                        ]),
+                        dbc.Tab(label="NLP-based Evaluation", tab_id="eval-tab-nlp", children=[
+                            dbc.Row([
+                                dbc.Col([
+                                    html.Label("Metric", className="fw-semibold small mt-2 mb-1"),
+                                    dcc.Dropdown(
+                                        id="eval-nlp-metric",
+                                        options=[{"label": v, "value": k}
+                                                 for k, v in _NLP_METRICS.items()],
+                                        value="bertscore_f1",
+                                        clearable=False,
+                                    ),
+                                ], width=12, md=3),
+                            ], className="mb-2"),
+                            dcc.Graph(id="eval-nlp-graph",
+                                      config={"displayModeBar": False},
+                                      style={"height": "460px"}),
+                            html.Div(id="eval-nlp-examples", className="mt-3"),
+                        ]),
+                    ], id="eval-sub-tabs", active_tab="eval-tab-llm"),
+                ],
+            ),
+
+            # ── Section 2: Methods extraction ───────────────────────────────
+            dbc.AccordionItem(
+                title="2 · Methods Extraction Quality",
+                children=[
+                    html.P(
+                        "Average NLP metrics comparing the extracted Methods section text "
+                        "to the curated ground truth. Click a bar to see the distribution "
+                        "and examples.",
+                        className="text-muted small mb-3",
+                    ),
+                    dcc.RadioItems(
+                        id="classif-group",
+                        options=[
+                            {"label": " Azoreductases", "value": "azoreductases"},
+                            {"label": " SAMs",          "value": "sams"},
+                        ],
+                        value="azoreductases",
+                        inline=True,
+                        inputStyle={"marginRight": "4px"},
+                        labelStyle={"marginRight": "16px"},
+                        className="mb-3",
+                    ),
+                    dcc.Graph(id="eval-classif-graph",
+                              config={"displayModeBar": False},
+                              style={"height": "320px"}),
+                    html.Div(id="eval-classif-examples", className="mt-3"),
+                ],
+            ),
+
+            # ── Section 3: Classification confusion matrix ───────────────────
+            dbc.AccordionItem(
+                title="3 · Classification Performance (Enzymology Detection)",
+                children=[
+                    html.P(
+                        "Confusion matrix and classification metrics for the LlamaParse "
+                        "paper classification step (enzymology vs. non-enzymology).",
+                        className="text-muted small mb-3",
+                    ),
+                    dcc.RadioItems(
+                        id="confmat-group",
+                        options=[
+                            {"label": " Azoreductases", "value": "azoreductases"},
+                            {"label": " SAMs",          "value": "sams"},
+                        ],
+                        value="sams",
+                        inline=True,
+                        inputStyle={"marginRight": "4px"},
+                        labelStyle={"marginRight": "16px"},
+                        className="mb-3",
+                    ),
+                    html.Div(id="confmat-cards"),
+                    dcc.Graph(id="confmat-heatmap",
+                              config={"displayModeBar": False},
+                              style={"height": "340px"}),
+                    html.Div(id="confmat-examples", className="mt-3"),
+                ],
+            ),
+
+        ], start_collapsed=False),
+    ], fluid=True, className="pt-3")
+
+
 def contact_tab():
     return dbc.Container([
         html.H3("Research Team", className="mt-3 mb-4"),
@@ -895,6 +1280,64 @@ def readme_tab():
                 ], flush=True),
             ]),
 
+            # ── Evaluation Results ────────────────────────────────────────────
+            dbc.AccordionItem(title="Evaluation Results", children=[
+                html.P(
+                    "Pipeline evaluation across two protein groups (Azoreductases and SAMs) "
+                    "and six GPT model configurations (gpt-4.1, gpt-5-mini, gpt-5 × no-RAG / RAG). "
+                    "Three sections are available.",
+                    className="mb-3",
+                ),
+                html.H6("1 · Purification Conditions Evaluation", className="fw-bold"),
+                dbc.ListGroup([
+                    dbc.ListGroupItem([
+                        html.Span("LLM-based evaluation  ", className="fw-semibold"),
+                        "Mean LLM similarity score (0–10) per extraction field, with standard-error bars. "
+                        "Click a bar to see the score distribution (box plot + histogram) and "
+                        "the 5 worst / 5 best protein pairs for that field and model.",
+                    ]),
+                    dbc.ListGroupItem([
+                        html.Span("NLP-based evaluation  ", className="fw-semibold"),
+                        "Same layout using NLP metrics (BERTScore F1, ROUGE-1 F, BLEU, METEOR, "
+                        "Cosine Similarity). All metrics normalised to 0–1. "
+                        "Use the metric dropdown to switch between metrics. "
+                        "Click a bar for distribution and examples.",
+                    ]),
+                ], flush=True, className="mb-3"),
+                html.H6("2 · Methods Extraction Quality", className="fw-bold"),
+                html.P(
+                    "Average NLP metrics comparing the extracted Methods section text to the curated "
+                    "ground truth (Azoreductases: 31 papers; SAMs: 292 papers). "
+                    "All metrics normalised to 0–1. "
+                    "Click a bar to see the distribution and 5 worst / 5 best paper excerpts.",
+                    className="mb-3",
+                ),
+                html.H6("3 · Classification Performance (Enzymology Detection)", className="fw-bold"),
+                dbc.ListGroup([
+                    dbc.ListGroupItem([
+                        html.Span("Metric cards  ", className="fw-semibold"),
+                        "Precision, Recall, F1 Score, and Accuracy for the LlamaParse "
+                        "enzymology classification step.",
+                    ]),
+                    dbc.ListGroupItem([
+                        html.Span("Confusion matrix  ", className="fw-semibold"),
+                        "Interactive heatmap (Actual × Predicted) with counts and percentages. "
+                        "Click any cell (TP / FP / FN / TN) to see up to 10 example papers "
+                        "from that category with title, date, journal, and PubMed link.",
+                    ]),
+                    dbc.ListGroupItem([
+                        html.Span("Azoreductases  ", className="fw-semibold"),
+                        "All 31 ground-truth papers were classified as enzymology "
+                        "(Precision = Recall = F1 = 1.0; no negative set available).",
+                    ]),
+                    dbc.ListGroupItem([
+                        html.Span("SAMs  ", className="fw-semibold"),
+                        "Full 2×2 confusion matrix from 292 papers "
+                        "(Precision ≈ 0.69, Recall ≈ 0.88, F1 ≈ 0.78).",
+                    ]),
+                ], flush=True),
+            ]),
+
             # ── Extraction Pipeline Instructions ──────────────────────────────
             dbc.AccordionItem(title="Extraction Pipeline Instructions", children=[
                 html.P([
@@ -954,6 +1397,7 @@ app.layout = dbc.Container([
         dbc.Tab(label="Extraction Data",    tab_id="tab-proteins"),
         dbc.Tab(label="Clustering Explorer",tab_id="tab-clustering"),
         dbc.Tab(label="Grid Metrics",       tab_id="tab-grid-metrics"),
+        dbc.Tab(label="Evaluation Results", tab_id="tab-evaluation"),
         dbc.Tab(label="Extraction Pipeline Instructions", tab_id="tab-pipeline"),
         dbc.Tab(label="README",             tab_id="tab-readme"),
         dbc.Tab(label="Contact",            tab_id="tab-contact"),
@@ -977,6 +1421,8 @@ def render_tab(tab):
         return clustering_tab()
     elif tab == "tab-grid-metrics":
         return grid_metrics_tab()
+    elif tab == "tab-evaluation":
+        return evaluation_tab()
     elif tab == "tab-pipeline":
         return pipeline_tab()
     return html.Div()
@@ -1803,6 +2249,500 @@ def clear_filters(_):
 def download_csv(_, table_data):
     filtered_df = pd.DataFrame(table_data)
     return dcc.send_data_frame(filtered_df.to_csv, "llm_extractor_results.csv", index=False)
+
+
+@app.callback(
+    Output("eval-classif-graph", "figure"),
+    Input("classif-group", "value"),
+    prevent_initial_call=True,
+)
+def update_classif_chart(group):
+    if CLASSIF_DF.empty or not group:
+        return go.Figure()
+    sub = CLASSIF_DF[CLASSIF_DF["group"] == group]
+    if sub.empty:
+        return go.Figure()
+    grp  = sub.groupby("metric")["value"]
+    avg  = grp.mean().rename("value").reset_index()
+    sem  = grp.sem().rename("sem").reset_index()
+    avg  = avg.merge(sem, on="metric")
+    avg["label"] = avg["metric"].map(_NLP_METRICS)
+    # Normalise BLEU / METEOR from 0–100 → 0–1
+    avg["scale"] = avg["metric"].map(lambda m: _NLP_SCALE.get(m, 1.0))
+    avg["value"] = avg["value"] / avg["scale"]
+    avg["sem"]   = avg["sem"]   / avg["scale"]
+    fig = go.Figure(go.Bar(
+        x=avg["label"], y=avg["value"],
+        customdata=avg[["metric"]].values.tolist(),
+        error_y=dict(type="data", array=avg["sem"].fillna(0).tolist(), visible=True),
+        marker_color="#1a6090",
+        hovertemplate="%{x}<br>mean: %{y:.3f}<br>SEM: %{error_y.array:.3f}<extra></extra>",
+    ))
+    fig.update_layout(
+        yaxis=dict(title="Mean score (0–1)", range=[0, 1], gridcolor="#eeeeee"),
+        xaxis_title="Metric",
+        margin=dict(t=20, b=40, l=60, r=20),
+        plot_bgcolor="white", paper_bgcolor="white",
+    )
+    return fig
+
+
+@app.callback(
+    Output("eval-classif-examples", "children"),
+    Input("eval-classif-graph", "clickData"),
+    State("classif-group", "value"),
+    prevent_initial_call=True,
+)
+def show_classif_examples(click_data, group):
+    if not click_data or CLASSIF_DF.empty:
+        return dash.no_update
+    pt     = click_data["points"][0]
+    metric = pt["customdata"][0]
+    pool   = CLASSIF_DF[
+        (CLASSIF_DF["group"] == group) &
+        (CLASSIF_DF["metric"] == metric)
+    ]
+    if pool.empty:
+        return html.P("No examples found.", className="text-muted small")
+    metric_label = _NLP_METRICS.get(metric, metric)
+    scale  = _NLP_SCALE.get(metric, 1.0)
+    values = (pool["value"] / scale).tolist()
+    dist_fig = _dist_figure(values, x_label=f"{metric_label} (0–1)")
+    sub = _extremes(pool, "value")
+    rows = []
+    prev_rank = None
+    for _, r in sub.iterrows():
+        if r["_rank"] != prev_rank:
+            label_text = "5 Worst" if r["_rank"] == "worst" else "5 Best"
+            color      = "danger"  if r["_rank"] == "worst" else "success"
+            rows.append(html.Tr([
+                html.Td(dbc.Badge(label_text, color=color, className="me-1"),
+                        colSpan=4, className="fw-semibold small py-1 table-active"),
+            ]))
+            prev_rank = r["_rank"]
+        rows.append(html.Tr([
+            html.Td(r["pmid"],           className="text-muted small", style={"whiteSpace": "nowrap"}),
+            html.Td(r["gt_text"][:300],  className="small"),
+            html.Td(r["llm_text"][:300], className="small"),
+            html.Td(f"{r['value']/scale:.3f}", className="small text-center"),
+        ]))
+    return html.Div([
+        html.H6(f"Examples · {metric_label} · {group.title()}", className="fw-semibold mb-2"),
+        dcc.Graph(figure=dist_fig, config={"displayModeBar": False}),
+        html.P(f"Methods text truncated to 300 chars for display.",
+               className="text-muted small mb-2 mt-3"),
+        dbc.Table([
+            html.Thead(html.Tr([
+                html.Th("PMID"), html.Th("Ground truth (excerpt)"),
+                html.Th("LLM extraction (excerpt)"), html.Th(metric_label),
+            ])),
+            html.Tbody(rows),
+        ], bordered=True, size="sm", hover=True, responsive=True),
+    ])
+
+
+def _eval_bar_figure(stats_df, y_col, err_col, y_label, models):
+    """Grouped bar chart over _PURIF_FIELDS with standard-error bars."""
+    fig = go.Figure()
+    for lbl in models:
+        d = stats_df[stats_df["label"] == lbl].copy()
+        d = d.set_index("field").reindex(_PURIF_FIELDS).reset_index()
+        fig.add_trace(go.Bar(
+            name=lbl,
+            x=d["field"],
+            y=d[y_col],
+            customdata=[[lbl]] * len(d),
+            error_y=dict(type="data", array=d[err_col].fillna(0).tolist(), visible=True),
+            hovertemplate="%{x}<br>mean: %{y:.3f}<br>SEM: %{error_y.array:.3f}<extra>" + lbl + "</extra>",
+        ))
+    fig.update_layout(
+        barmode="group",
+        yaxis_title=y_label,
+        xaxis_title="Field",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(t=60, b=110, l=60, r=20),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        yaxis=dict(gridcolor="#eeeeee"),
+    )
+    fig.update_xaxes(tickangle=35)
+    return fig
+
+
+@app.callback(
+    Output("eval-llm-graph", "figure"),
+    Input("eval-group", "value"),
+    Input("eval-model-checklist", "value"),
+    prevent_initial_call=True,
+)
+def update_eval_llm(group, models):
+    if EVAL_LLM_DF.empty or not group or not models:
+        return go.Figure()
+    sub = EVAL_LLM_DF[
+        (EVAL_LLM_DF["group"] == group) & (EVAL_LLM_DF["label"].isin(models))
+    ]
+    if sub.empty:
+        return go.Figure()
+    grp = sub.groupby(["label", "field"])["similarity_score"]
+    stats = grp.mean().rename("similarity_score").reset_index()
+    stats["sem"] = grp.sem().values
+    return _eval_bar_figure(stats, "similarity_score", "sem",
+                            "Mean similarity score (0–10)", models)
+
+
+@app.callback(
+    Output("eval-nlp-graph", "figure"),
+    Input("eval-group", "value"),
+    Input("eval-model-checklist", "value"),
+    Input("eval-nlp-metric", "value"),
+    prevent_initial_call=True,
+)
+def update_eval_nlp(group, models, metric):
+    if EVAL_NLP_DF.empty or not group or not models or not metric:
+        return go.Figure()
+    sub = EVAL_NLP_DF[
+        (EVAL_NLP_DF["group"] == group) &
+        (EVAL_NLP_DF["label"].isin(models)) &
+        (EVAL_NLP_DF["metric"] == metric)
+    ]
+    if sub.empty:
+        return go.Figure()
+    grp   = sub.groupby(["label", "field"])["value"]
+    stats = grp.mean().rename("value").reset_index()
+    stats["sem"] = grp.sem().values
+    scale = _NLP_SCALE.get(metric, 1.0)
+    stats["value"] /= scale
+    stats["sem"]   /= scale
+    metric_label = _NLP_METRICS.get(metric, metric)
+    return _eval_bar_figure(stats, "value", "sem",
+                            f"Mean {metric_label} (0–1)", models)
+
+
+def _examples_header(field, label):
+    return html.H6(
+        f"Examples · {field.replace('_', ' ').title()} · {label}",
+        className="fw-semibold mb-2",
+    )
+
+
+def _dist_figure(values, x_label, x_range=None, nbinsx=20):
+    """Box plot (top) + histogram (bottom) for a 1-D series of values."""
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        row_heights=[0.25, 0.75],
+        vertical_spacing=0.04,
+    )
+    color = "#1a6090"
+    fig.add_trace(go.Box(
+        x=values, orientation="h",
+        marker_color=color, line_color=color,
+        boxmean="sd",
+        hovertemplate=(
+            "min: %{x[0]:.3f}<br>"
+            "Q1: %{x[1]:.3f}<br>"
+            "median: %{x[2]:.3f}<br>"
+            "Q3: %{x[3]:.3f}<br>"
+            "max: %{x[4]:.3f}<extra></extra>"
+        ),
+    ), row=1, col=1)
+    mean_val = float(pd.Series(values).mean())
+    fig.add_trace(go.Histogram(
+        x=values, nbinsx=nbinsx,
+        marker_color=color, opacity=0.8,
+        hovertemplate=f"{x_label}: %{{x:.3f}}<br>Count: %{{y}}<extra></extra>",
+    ), row=2, col=1)
+    fig.add_vline(x=mean_val, line_dash="dash", line_color="crimson",
+                  annotation_text=f"mean={mean_val:.3f}",
+                  annotation_position="top right")
+    layout = dict(
+        showlegend=False,
+        xaxis2_title=x_label,
+        yaxis2_title="Count",
+        margin=dict(t=20, b=40, l=50, r=20),
+        height=280,
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        yaxis=dict(showticklabels=False, gridcolor="#eeeeee"),
+        yaxis2=dict(gridcolor="#eeeeee"),
+    )
+    if x_range:
+        layout["xaxis2"] = dict(title=x_label, range=x_range)
+        layout["xaxis"]  = dict(range=x_range)
+    fig.update_layout(**layout)
+    return fig
+
+
+def _extremes(df, score_col, n=5):
+    """Return bottom-n and top-n rows by score_col, labelled."""
+    worst = df.nsmallest(n, score_col).copy()
+    best  = df.nlargest(n,  score_col).copy()
+    worst["_rank"] = "worst"
+    best["_rank"]  = "best"
+    return pd.concat([worst, best], ignore_index=True)
+
+
+@app.callback(
+    Output("eval-llm-examples", "children"),
+    Input("eval-llm-graph", "clickData"),
+    State("eval-group", "value"),
+    prevent_initial_call=True,
+)
+def show_eval_llm_examples(click_data, group):
+    if not click_data or EVAL_LLM_DF.empty:
+        return dash.no_update
+    pt    = click_data["points"][0]
+    field = pt["x"]
+    label = pt["customdata"][0]
+    pool = EVAL_LLM_DF[
+        (EVAL_LLM_DF["group"] == group) &
+        (EVAL_LLM_DF["label"] == label) &
+        (EVAL_LLM_DF["field"] == field)
+    ]
+    if pool.empty:
+        return html.P("No examples found.", className="text-muted small")
+    # Distribution chart
+    dist_fig = _dist_figure(
+        pool["similarity_score"].tolist(),
+        x_label="Similarity score (0–10)",
+        x_range=[0, 10],
+        nbinsx=10,
+    )
+    # Examples table
+    sub = _extremes(pool, "similarity_score")
+    rows = []
+    prev_rank = None
+    for _, r in sub.iterrows():
+        if r["_rank"] != prev_rank:
+            label_text = "5 Worst" if r["_rank"] == "worst" else "5 Best"
+            color      = "danger"  if r["_rank"] == "worst" else "success"
+            rows.append(html.Tr([
+                html.Td(dbc.Badge(label_text, color=color, className="me-1"),
+                        colSpan=5, className="fw-semibold small py-1 table-active"),
+            ]))
+            prev_rank = r["_rank"]
+        rows.append(html.Tr([
+            html.Td(r["pmid"],                           className="text-muted small", style={"whiteSpace":"nowrap"}),
+            html.Td(r["gt_text"],                        className="small"),
+            html.Td(r["llm_text"],                       className="small"),
+            html.Td(f"{r['similarity_score']:.0f} / 10", className="small text-center"),
+            html.Td(r["explanation"],                    className="small text-muted"),
+        ]))
+    return html.Div([
+        _examples_header(field, label),
+        dcc.Graph(figure=dist_fig, config={"displayModeBar": False}),
+        dbc.Table([
+            html.Thead(html.Tr([
+                html.Th("PMID"), html.Th("Ground truth"), html.Th("LLM extraction"),
+                html.Th("Score"), html.Th("Explanation"),
+            ])),
+            html.Tbody(rows),
+        ], bordered=True, size="sm", hover=True, responsive=True, className="mt-3"),
+    ])
+
+
+@app.callback(
+    Output("eval-nlp-examples", "children"),
+    Input("eval-nlp-graph", "clickData"),
+    State("eval-group", "value"),
+    State("eval-nlp-metric", "value"),
+    prevent_initial_call=True,
+)
+def show_eval_nlp_examples(click_data, group, metric):
+    if not click_data or EVAL_NLP_DF.empty:
+        return dash.no_update
+    pt    = click_data["points"][0]
+    field = pt["x"]
+    label = pt["customdata"][0]
+    pool = EVAL_NLP_DF[
+        (EVAL_NLP_DF["group"] == group) &
+        (EVAL_NLP_DF["label"] == label) &
+        (EVAL_NLP_DF["field"] == field) &
+        (EVAL_NLP_DF["metric"] == metric)
+    ]
+    if pool.empty:
+        return html.P("No examples found.", className="text-muted small")
+    metric_label = _NLP_METRICS.get(metric, metric)
+    scale = _NLP_SCALE.get(metric, 1.0)
+    # Distribution chart
+    dist_fig = _dist_figure(
+        (pool["value"] / scale).tolist(),
+        x_label=f"{metric_label} (0–1)",
+    )
+    # Examples table
+    sub = _extremes(pool, "value")
+    rows = []
+    prev_rank = None
+    for _, r in sub.iterrows():
+        if r["_rank"] != prev_rank:
+            label_text = "5 Worst" if r["_rank"] == "worst" else "5 Best"
+            color      = "danger"  if r["_rank"] == "worst" else "success"
+            rows.append(html.Tr([
+                html.Td(dbc.Badge(label_text, color=color, className="me-1"),
+                        colSpan=4, className="fw-semibold small py-1 table-active"),
+            ]))
+            prev_rank = r["_rank"]
+        rows.append(html.Tr([
+            html.Td(r["pmid"],           className="text-muted small", style={"whiteSpace":"nowrap"}),
+            html.Td(r["gt_text"],        className="small"),
+            html.Td(r["llm_text"],       className="small"),
+            html.Td(f"{r['value']/scale:.3f}", className="small text-center"),
+        ]))
+    return html.Div([
+        _examples_header(field, label),
+        dcc.Graph(figure=dist_fig, config={"displayModeBar": False}),
+        dbc.Table([
+            html.Thead(html.Tr([
+                html.Th("PMID"), html.Th("Ground truth"),
+                html.Th("LLM extraction"), html.Th(metric_label),
+            ])),
+            html.Tbody(rows),
+        ], bordered=True, size="sm", hover=True, responsive=True, className="mt-3"),
+    ])
+
+
+def _metric_card(label, value, color="primary"):
+    body = f"{value:.3f}" if isinstance(value, float) else (str(value) if value is not None else "N/A")
+    return dbc.Col(
+        dbc.Card([
+            dbc.CardBody([
+                html.P(label, className="text-muted small mb-1"),
+                html.H4(body, className=f"text-{color} mb-0 fw-bold"),
+            ], className="text-center p-2"),
+        ], className="shadow-sm"),
+        xs=6, sm=4, md=2,
+    )
+
+
+@app.callback(
+    Output("confmat-cards",   "children"),
+    Output("confmat-heatmap", "figure"),
+    Input("confmat-group", "value"),
+    prevent_initial_call=True,
+)
+def update_confmat(group):
+    data = CONF_MATRICES.get(group)
+    if not data:
+        return html.P("No data available.", className="text-muted"), go.Figure()
+
+    tp, fp, fn, tn = data["TP"], data["FP"], data["FN"], data["TN"]
+
+    cards = dbc.Row([
+        _metric_card("Precision", data["Precision"], "success"),
+        _metric_card("Recall",    data["Recall"],    "primary"),
+        _metric_card("F1 Score",  data["F1"],        "warning"),
+        _metric_card("Accuracy",  data["Accuracy"],  "info"),
+        _metric_card("TP", tp, "secondary"),
+        _metric_card("FP", fp, "danger"),
+        _metric_card("FN", fn, "danger"),
+        _metric_card("TN", tn, "secondary"),
+    ], className="g-2 mb-3")
+
+    note = data.get("note")
+    if note:
+        fig = go.Figure()
+        fig.add_annotation(text=note, xref="paper", yref="paper",
+                           x=0.5, y=0.5, showarrow=False,
+                           font=dict(size=13), align="center")
+        fig.update_layout(plot_bgcolor="white", paper_bgcolor="white",
+                          xaxis_visible=False, yaxis_visible=False)
+    else:
+        total = tp + fp + fn + tn
+        z     = [[tn, fp], [fn, tp]]
+        cdata = [[[False, False], [False, True]],
+                 [[True,  False], [True,  True]]]
+        text = [
+            [f"<b>TN</b><br>{tn} ({tn/total*100:.1f}%)",
+             f"<b>FP</b><br>{fp} ({fp/total*100:.1f}%)"],
+            [f"<b>FN</b><br>{fn} ({fn/total*100:.1f}%)",
+             f"<b>TP</b><br>{tp} ({tp/total*100:.1f}%)"],
+        ]
+        fig = go.Figure(go.Heatmap(
+            z=z,
+            x=["Predicted: Non-Enzymology", "Predicted: Enzymology"],
+            y=["Actual: Non-Enzymology",    "Actual: Enzymology"],
+            customdata=cdata,
+            text=text,
+            texttemplate="%{text}",
+            colorscale="Blues",
+            showscale=True,
+            hovertemplate=(
+                "%{y}<br>%{x}<br>Count: %{z}<br>"
+                "<i>Click to see examples</i><extra></extra>"
+            ),
+        ))
+        fig.update_layout(
+            margin=dict(t=20, b=60, l=160, r=20),
+            xaxis=dict(side="bottom"),
+            plot_bgcolor="white", paper_bgcolor="white",
+        )
+
+    return cards, fig
+
+
+@app.callback(
+    Output("confmat-examples", "children"),
+    Input("confmat-heatmap", "clickData"),
+    State("confmat-group", "value"),
+    prevent_initial_call=True,
+)
+def show_confmat_examples(click_data, group):
+    if not click_data:
+        return dash.no_update
+    data = CONF_MATRICES.get(group, {})
+    papers = data.get("papers", {})
+    if not papers:
+        return html.P("No paper-level data available.", className="text-muted small")
+
+    pt        = click_data["points"][0]
+    actual    = "Non-Enzymology" not in pt.get("y", "")
+    predicted = "Non-Enzymology" not in pt.get("x", "")
+
+    # Label for the cell
+    cell_label = {
+        (True,  True):  ("TP", "success", "True Positives — correctly classified as enzymology"),
+        (True,  False): ("FN", "warning", "False Negatives — enzymology papers missed by classifier"),
+        (False, True):  ("FP", "danger",  "False Positives — non-enzymology classified as enzymology"),
+        (False, False): ("TN", "secondary","True Negatives — correctly classified as non-enzymology"),
+    }.get((actual, predicted), ("?", "light", ""))
+
+    abbr, color, description = cell_label
+    subset = [(pmid, v) for pmid, v in papers.items()
+              if v["actual"] == actual and v["predicted"] == predicted]
+
+    if not subset:
+        return html.P("No papers in this category.", className="text-muted small")
+
+    # Show up to 10 examples
+    import random
+    sample = random.sample(subset, min(10, len(subset)))
+
+    rows = []
+    for pmid, v in sample:
+        url = v.get("url", "")
+        pmid_cell = html.A(pmid, href=url, target="_blank") if url else pmid
+        rows.append(html.Tr([
+            html.Td(pmid_cell, className="text-muted small", style={"whiteSpace": "nowrap"}),
+            html.Td(v["title"],    className="small"),
+            html.Td(v["pub_date"], className="small text-muted", style={"whiteSpace": "nowrap"}),
+            html.Td(v["source"],   className="small text-muted"),
+        ]))
+
+    return html.Div([
+        html.H6([
+            dbc.Badge(abbr, color=color, className="me-2"),
+            description,
+            html.Span(f"  ({len(subset)} total, showing {len(sample)})",
+                      className="text-muted small fw-normal"),
+        ], className="fw-semibold mb-2"),
+        dbc.Table([
+            html.Thead(html.Tr([
+                html.Th("PMID"), html.Th("Title"),
+                html.Th("Date"), html.Th("Journal"),
+            ])),
+            html.Tbody(rows),
+        ], bordered=True, size="sm", hover=True, responsive=True),
+    ])
 
 
 # Run
