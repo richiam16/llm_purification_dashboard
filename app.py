@@ -1677,6 +1677,55 @@ _PALETTE = [
 _NOISE_COLOR = "#c0c0c0"
 
 
+def _uniprot_card(pmid):
+    """Build a UniProt entries card for a given PMID."""
+    entry = RAW.get(str(pmid), {})
+    uniprot_ids   = entry.get("Uniprot_IDS", []) or []
+    protein_names = entry.get("Protein_names", []) or []
+    organisms     = entry.get("Organisms", []) or []
+    sequences     = entry.get("Sequences", []) or []
+
+    if not uniprot_ids:
+        return dbc.Card([
+            dbc.CardHeader(html.Span("UniProt Entries", className="fw-bold")),
+            dbc.CardBody(html.Span("No UniProt entries linked to this PMID.",
+                                   className="text-muted small")),
+        ], className="mb-3", color="light")
+
+    rows = []
+    for i, uid in enumerate(uniprot_ids):
+        name     = protein_names[i] if i < len(protein_names) else "—"
+        org      = organisms[i]     if i < len(organisms)     else "—"
+        seq      = sequences[i]     if i < len(sequences)     else None
+        seq_info = f"{len(seq)} aa" if seq else "—"
+        rows.append(dbc.ListGroupItem([
+            dbc.Row([
+                dbc.Col([
+                    html.A(uid, href=f"https://www.uniprot.org/uniprot/{uid}",
+                           target="_blank", className="fw-bold small me-2"),
+                    html.Span(org, className="text-muted small"),
+                ], width=4),
+                dbc.Col(html.Span(name, className="small"), width=6),
+                dbc.Col(html.Span(seq_info, className="text-muted small"), width=2),
+            ], align="center"),
+        ]))
+
+    return dbc.Card([
+        dbc.CardHeader(html.Span(
+            f"UniProt Entries for PMID {pmid} ({len(uniprot_ids)} entries)",
+            className="fw-bold",
+        )),
+        dbc.CardBody([
+            dbc.Row([
+                dbc.Col(html.Span("UniProt ID / Organism", className="fw-semibold small"), width=4),
+                dbc.Col(html.Span("Protein Name",          className="fw-semibold small"), width=6),
+                dbc.Col(html.Span("Sequence",              className="fw-semibold small"), width=2),
+            ], className="px-3 mb-1"),
+            dbc.ListGroup(rows, flush=True),
+        ]),
+    ], className="mb-3")
+
+
 def _load_cluster_csv(model, min_val, threshold):
     """Return the ALL_FIELDS dataframe or None."""
     path = os.path.join(GRID_BASE, f"model={model}", f"min={min_val}",
@@ -1780,6 +1829,29 @@ def _umap_figure(cdf, field_name, top_n=20):
             bordercolor="#dee2e6", borderwidth=1,
             tracegroupgap=1,
         ),
+        updatemenus=[dict(
+            type="buttons",
+            showactive=False,
+            direction="right",
+            x=1.01, xanchor="left",
+            y=1.06, yanchor="top",
+            pad={"r": 4, "t": 0},
+            bgcolor="#f8f9fa",
+            bordercolor="#ced4da",
+            font=dict(size=11),
+            buttons=[
+                dict(
+                    label="Deselect all",
+                    method="restyle",
+                    args=[{"visible": "legendonly"}],
+                ),
+                dict(
+                    label="Select all",
+                    method="restyle",
+                    args=[{"visible": True}],
+                ),
+            ],
+        )],
         margin=dict(l=20, r=200, t=50, b=20),
         hoverlabel=dict(bgcolor="white", font_size=12, namelength=-1),
     )
@@ -2071,6 +2143,7 @@ def show_cluster_point_detail(click_data, field, model, min_val, threshold, plot
                 ) if cond_rows else html.Span("No conditions recorded for this protein.", className="text-muted small")
             ),
         ], className="mb-3"),
+        _uniprot_card(pmid),
     ]), None
 
 
